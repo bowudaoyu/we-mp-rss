@@ -267,7 +267,7 @@ class WxGather:
         _cookies.append({'name':'token','value':self.token})
         if CallBack is not None:
             CallBack(item)
-        self.Wait(tips=f"{item['mps_title']} 处理完成",min=3,max=10)
+        self.Wait(tips=f"{item['mps_title']} 处理完成",min=10,max=20)
         pass
     def Error(self,error:str,code=None):
         self.Over()
