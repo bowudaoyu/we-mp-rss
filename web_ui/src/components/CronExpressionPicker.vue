@@ -66,14 +66,6 @@ const cornDescription = computed(() => {
   return `${monthDesc} ${dayDesc} ${weekdayDesc} ${hourDesc} ${minuteDesc}`
 })
 
-const onHoursChange = () => {
-  // 当用户选择了具体小时但分钟仍为*时，自动将分钟设为0，避免每分钟触发
-  if (hours.value !== '*' && !hours.value.startsWith('*/') && !hours.value.includes('-') && minutes.value === '*') {
-    minutes.value = '0'
-  }
-  updateExpression()
-}
-
 const updateExpression = () => {
   emit('update:modelValue', cronExpression.value)
 }
@@ -110,7 +102,7 @@ defineExpose({
         </a-select>
       </a-form-item>
       <a-form-item label="小时">
-        <a-select v-model="hours" @change="onHoursChange" style="width: 180px">
+        <a-select v-model="hours" @change="updateExpression" style="width: 180px">
           <a-option v-for="h in 24" :key="h-1" :value="(h-1).toString()">{{ h-1 }}</a-option>
           <a-option value="*">*</a-option>
           <a-option value="*/1">每1小时</a-option>
