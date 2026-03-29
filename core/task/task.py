@@ -48,7 +48,7 @@ class TaskScheduler:
         """初始化调度器和线程锁"""
         self._scheduler = BackgroundScheduler(
             job_defaults={
-                'misfire_grace_time': 3600,  # 允许最多1小时的延迟仍然补执行
+                'misfire_grace_time': None,  # None表示无论错过多久都补执行
                 'coalesce': True,  # 多次错过只执行一次
             }
         )
