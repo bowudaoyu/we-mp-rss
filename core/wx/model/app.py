@@ -88,6 +88,10 @@ class MpsAppMsg(WxGather):
                             if "appmsgex" in publish_info:
                                 # info = '"{}","{}","{}","{}"'.format(str(item["aid"]), item['title'], item['link'], str(item['create_time']))
                                 for item in publish_info["appmsgex"]:
+                                    # 跳过已被删除的文章（del_flag为1表示已删除）
+                                    if item.get("del_flag", 0):
+                                        print(f"跳过已删除文章: {item.get('title', 'unknown')}")
+                                        continue
                                     if Gather_Content:
                                         if not super().HasGathered(item["aid"]):
                                             item["content"] = self.content_extract(item['link'])

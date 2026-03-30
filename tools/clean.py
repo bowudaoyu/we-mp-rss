@@ -22,14 +22,14 @@ def clean_duplicate_articles():
         # 获取所有重复的标题列表
         titles = [item[0] for item in duplicate_titles]
         
-        # 查询这些标题对应的所有文章
-        articles = session.query(Article).filter(Article.title.in_(titles)).all()
-        
-        # 用于存储已检查的文章标题和mp_id组合
+        # 查询这些标题对应的所有文章，按发布时间降序排列（最新的排前面）
+        articles = session.query(Article).filter(Article.title.in_(titles)).order_by(Article.publish_time.desc()).all()
+
+        # 用于存储已检查的文章标题和mp_id组合，保留最新的那篇
         seen_articles = set()
         duplicates = []
-        
-        # 检查重复文章
+
+        # 检查重复文章（由于按publish_time降序，第一个遇到的就是最新版本）
         for article in articles:
             article_key = (article.title, article.mp_id)
             if article_key in seen_articles:
