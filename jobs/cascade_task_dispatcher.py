@@ -754,9 +754,8 @@ class CascadeScheduleService:
     
     def reload(self):
         """重载调度任务"""
-        if not self.scheduler:
-            self.scheduler = cascade_task_scheduler
-        self.scheduler.clear_all_jobs()
+        if self.scheduler:
+            self.scheduler.clear_all_jobs()
         self._load_scheduled_tasks()
         print_success("级联定时调度任务已重载")
 
