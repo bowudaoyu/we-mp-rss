@@ -195,16 +195,17 @@ class Db:
             from core.models.base import DATA_STATUS
             art.status=DATA_STATUS.ACTIVE
             session.add(art)
-            # self._session.merge(art)
-            sta=session.commit()
-            
+            session.commit()
+
         except Exception as e:
-            if "UNIQUE" in str(e) or "Duplicate entry" in str(e):
+            session.rollback()
+            err_str = str(e).lower()
+            if "unique" in err_str or "duplicate" in err_str:
                 print_warning(f"Article already exists: {art.id}")
             else:
                 print_error(f"Failed to add article: {e}")
             return False
-        return True    
+        return True
         
     def get_articles(self, id:str=None, limit:int=30, offset:int=0) -> List[Article]:
         try:
