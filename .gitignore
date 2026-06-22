@@ -22,3 +22,8 @@ test.yaml
 .venv
 .idea
 .trae
+
+config.yaml
+
+# 前端构建产物(现场 build,不入库)
+static/assets/
