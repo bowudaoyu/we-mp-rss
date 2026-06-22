@@ -26,7 +26,12 @@
     </div>
     {% endfor %}
 </div>
+{% else %}
+<div class="card" style="text-align: center; padding: 2rem;">
+    <p class="text-muted">暂无标签</p>
+</div>
 {% endif %}
 
+{% set item_name = "个标签" %}
 {% include "includes/pagination.html" %}
 {% include "includes/footer.html" %}

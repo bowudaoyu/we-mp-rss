@@ -15,10 +15,11 @@ def fetch_articles_without_content():
         # 查询content为空且未被锁定的文章
         from sqlalchemy import or_
         articles = session.query(Article).filter(
-            or_(Article.content.is_(None), Article.content == ""),
+            or_(Article.has_content==0),
             Article.status != DATA_STATUS.FETCHING,  # 排除正在获取的文章
-            Article.status != DATA_STATUS.DELETED  # 已删除文章不再参与自动补抓
-        ).limit(10).all()
+            Article.status != DATA_STATUS.DELETED,  # 已删除文章不再参与自动补抓
+            or_(Article.fix_fail_count.is_(None), Article.fix_fail_count < 3)  # 排除失败3次及以上的文章
+        ).order_by(Article.publish_time.desc()).limit(10).all()
         
         if not articles:
             print_warning("暂无需要获取内容的文章")
@@ -51,7 +52,10 @@ def fetch_articles_without_content():
                     if article.status == DATA_STATUS.DELETED:
                         print_error(f"获取文章 {article.title} 内容已被发布者删除")
                     else:
-                        print_success(f"成功更新文章 {article.title} 的内容, mode={fetch_mode}")
+                        print_success(f"成功更新文章 {article.title} 的内容, mode={fetch_mode} url: http://127.0.0.1:{cfg.get('port', 8001)}/views/article/{article.id}")
+                        # 成功获取内容后，恢复原始状态（通常为 ACTIVE），释放 FETCHING 锁
+                        article.status = original_status_map.get(article.id, DATA_STATUS.ACTIVE)
+                        session.commit()
                 else:
                     # 获取失败，恢复状态以便后续重试
                     article.status = original_status_map.get(article.id, DATA_STATUS.ACTIVE)
@@ -64,12 +68,14 @@ def fetch_articles_without_content():
                 session.commit()
                 print_error(f"处理文章 {article.title} 时发生错误: {e}")
     except Exception as e:
-        print(f"处理过程中发生错误: {e}")
+        print_error(f"处理过程中发生错误: {e}")
+        raise  # 重新抛出异常，让队列记录错误
+    finally:
+        session.close()
 from core.task import TaskScheduler
-from core.queue import TaskQueueManager
-scheduler=TaskScheduler()
-task_queue=TaskQueueManager()
-task_queue.run_task_background()
+from core.queue import ContentTaskQueue
+
+scheduler = TaskScheduler()
 def start_sync_content():
     """
     根据配置自动启动文章内容同步任务
@@ -79,6 +85,7 @@ def start_sync_content():
     - 根据配置的间隔时间设置定时任务
     - 清除现有任务队列和调度器中的所有作业
     - 添加新的定时同步任务并启动调度器
+    - 立即执行一次同步任务
     
     Args:
         无显式参数，从配置中读取以下设置：
@@ -96,12 +103,15 @@ def start_sync_content():
         return
     interval=int(cfg.get("gather.content_auto_interval",10)) # 每隔多少分钟
     cron_exp=f"*/{interval} * * * *"
-    task_queue.clear_queue()
+    # ContentTaskQueue.clear_queue()  # 已注释：避免清空消息任务队列
     scheduler.clear_all_jobs()
     def do_sync():
-        task_queue.add_task(fetch_articles_without_content)
+        ContentTaskQueue.add_task(fetch_articles_without_content, task_name="补抓文章内容")
     job_id=scheduler.add_cron_job(do_sync,cron_expr=cron_exp)
     print_success(f"已添自动同步文章内容任务: {job_id}")
     scheduler.start()
+    # 立即执行一次
+    do_sync()
+    print_success("已添加首次执行任务到队列")
 if __name__ == "__main__":
     fetch_articles_without_content()

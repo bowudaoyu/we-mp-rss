@@ -14,5 +14,7 @@ from .access_key import AccessKey
 from .cascade_node import CascadeNode, CascadeSyncLog
 # 导入级联任务分配模型
 from .cascade_task_allocation import CascadeTaskAllocation
+# 导入过滤规则模型
+from .filter_rule import FilterRule
 # 导入基础模型
 from .base import *

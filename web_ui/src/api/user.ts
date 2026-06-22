@@ -59,3 +59,61 @@ export const uploadAvatar = (file: File) => {
     }
   })
 }
+
+// 用户管理相关接口（管理员权限）
+export interface UserListResponse {
+  id: string
+  username: string
+  nickname: string
+  email: string
+  avatar: string
+  role: string
+  is_active: boolean
+  permissions: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface UserListParams {
+  page?: number
+  page_size?: number
+}
+
+export const getUserList = (params?: UserListParams) => {
+  return http.get<{list: UserListResponse[], total: number, page: number, page_size: number}>('/wx/user/list', { params })
+}
+
+export interface AddUserParams {
+  username: string
+  password: string
+  nickname?: string
+  email?: string
+  role?: string
+  permissions?: string[]
+}
+
+export const addUser = (data: AddUserParams) => {
+  return http.post<{code: number, message: string, data?: UserListResponse}>('/wx/user', data)
+}
+
+export interface UpdateUserByIdParams {
+  nickname?: string
+  email?: string
+  role?: string
+  permissions?: string[]
+  is_active?: boolean
+}
+
+export const updateUserById = (userId: string, data: UpdateUserByIdParams) => {
+  return http.put<{code: number, message: string}>(`/wx/user/${userId}`, data)
+}
+
+export const deleteUser = (userId: string) => {
+  return http.delete<{code: number, message: string}>(`/wx/user/${userId}`)
+}
+
+export const resetUserPassword = (userId: string, newPassword: string) => {
+  return http.post<{code: number, message: string}>(`/wx/user/${userId}/reset-password`, {
+    new_password: newPassword
+  })
+}

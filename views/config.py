@@ -10,6 +10,7 @@ class Config:
     tags_articles_template = f"{base_path}/templates/tags_articles.html"
     article_template = f"{base_path}/templates/article.html"
     article_detail_template = f"{base_path}/templates/article_detail.html"
+    article_detail_print_template = f"{base_path}/templates/print.html"
     articles_template = f"{base_path}/templates/articles.html"
     site={
         "name": cfg.get("site.name", "WeRss"),

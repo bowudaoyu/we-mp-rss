@@ -5,9 +5,6 @@ import type { MpItem } from '@/types/subscription'
 
 const formatCoverUrl = (url: string) => {
   if (!url) return ''
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return '/static/res/logo/' + url
-  }
   return url
 }
 
@@ -25,12 +22,14 @@ const loading = ref(false)
 const mpList = ref<MpItem[]>([])
 const selectedMps = ref<MpItem[]>([])
 const currentPage = ref(0)
+const totalCount = ref(0)
 const hasMore = ref(true)
-const pageSize = 10
+const pageSize = 20
 
 const filteredMps = computed(() => {
-  return mpList.value.filter(mp => 
-    !selectedMps.value.some(selected => selected.id === mp.id)
+  return mpList.value.filter(mp =>
+    !selectedMps.value.some(selected => selected.id === mp.id) &&
+    mp.mp_name !== '精选文章'
   )
 })
 
@@ -65,8 +64,9 @@ const fetchMps = async (reset = true) => {
       mpList.value = [...mpList.value, ...newMps]
     }
     
-    // 判断是否还有更多数据
-    hasMore.value = res.list.length === pageSize
+    // 更新总数并判断是否还有更多数据
+    totalCount.value = res.total || 0
+    hasMore.value = mpList.value.length < totalCount.value
     
   } finally {
     loading.value = false
@@ -193,9 +193,12 @@ onMounted(() => {
         </div>
         
         <div v-if="hasMore" class="load-more">
-          <a-button type="text" @click="loadMore" :loading="loading">
-            加载更多
+          <a-button type="text" @click="loadMore" :loading="loading" :disabled="loading">
+            加载更多 ({{ mpList.length }}/{{ totalCount }})
           </a-button>
+        </div>
+        <div v-else-if="mpList.length > 0" class="load-more no-more">
+          已加载全部 {{ totalCount }} 个公众号
         </div>
       </a-spin>
     </a-space>
@@ -250,5 +253,10 @@ h4 {
   display: flex;
   justify-content: center;
   margin-top: 16px;
+}
+
+.no-more {
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 </style>

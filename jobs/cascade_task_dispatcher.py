@@ -683,6 +683,9 @@ class CascadeScheduleService:
         self.scheduler = None
     
     def start(self):
+        if cascade_task_scheduler is None:
+            print_error("TaskScheduler 未初始化，无法启动定时调度服务")
+            return
         self.scheduler = cascade_task_scheduler
         self.running = True
         
@@ -692,6 +695,10 @@ class CascadeScheduleService:
         print_success("级联定时调度服务已启动")
     def _load_scheduled_tasks(self):
         """加载定时任务"""
+        if self.scheduler is None:
+            print_error("调度器未初始化，无法加载定时任务")
+            return
+            
         session = DB.get_session()
         try:
             tasks = session.query(MessageTask).filter(

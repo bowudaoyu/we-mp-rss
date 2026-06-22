@@ -51,11 +51,12 @@ export interface FeaturedArticleTask {
   created?: boolean
 }
 
-export const getSubscriptions = (params?: { page?: number; pageSize?: number }) => {
+export const getSubscriptions = (params?: { page?: number; pageSize?: number; kw?: string; status?: number }) => {
   const apiParams = {
     offset: (params?.page || 0) * (params?.pageSize || 10),
     limit: params?.pageSize || 10,
-    kw: params?.kw || ""
+    kw: params?.kw || "",
+    ...(params?.status !== undefined && params?.status !== null ? { status: params.status } : {})
   }
   return http.get<SubscriptionListResult>('/wx/mps', { params: apiParams })
 }

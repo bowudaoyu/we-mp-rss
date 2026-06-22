@@ -75,7 +75,8 @@ class HtmlTools:
                              remove_xpaths: list = [],
                              remove_attributes: list = [],
                              remove_regx:list=[],
-                             remove_normal_tag:bool=False) -> str:
+                             remove_normal_tag:bool=False,
+                             remove_empty_text_elements:bool=False) -> str:
         """清理文章HTML内容，移除不需要的元素
         
         Args:
@@ -87,6 +88,7 @@ class HtmlTools:
             remove_attributes: 要移除的属性列表，格式为 [{'name': 'attr_name', 'value': 'attr_value'}] 或 [{'name': 'attr_name'}]
             remove_regx: 要移除的正则表达式列表
             remove_normal_tag: 是否移除常见的HTML元素
+            remove_empty_text_elements: 是否移除空文本元素（排除媒体标签）
         Returns:
             清理后的HTML内容
         """
@@ -128,8 +130,9 @@ class HtmlTools:
             cleaned_content=self.remove_html_region(cleaned_content,remove_regx)
         if remove_normal_tag:
             cleaned_content=self.remove_common_html_elements(cleaned_content)
-        # 移除空文本元素（排除媒体标签）
-        cleaned_content = self.remove_empty_text_elements(cleaned_content)
+        if remove_empty_text_elements:
+            # 移除空文本元素（排除媒体标签）
+            cleaned_content = self.remove_empty_text_elements(cleaned_content)
         
 
         return cleaned_content

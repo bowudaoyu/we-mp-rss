@@ -163,6 +163,55 @@ export const ClearDuplicateArticle = (id?: number | string) => {
 }
 
 /**
+ * 清理旧文章参数接口
+ */
+export interface CleanOldArticlesParams {
+  days?: number  // 清理多少天前的文章，默认3天
+  mp_id?: string  // 公众号ID，不指定则清理所有公众号
+  dry_run?: boolean  // 是否只预览不实际删除
+}
+
+/**
+ * 清理旧文章结果接口
+ */
+export interface CleanOldArticlesResult {
+  code: number
+  data: {
+    message: string
+    total_count?: number
+    deleted_count?: number
+    cutoff_date?: string
+    preview_count?: number
+    preview?: Array<{
+      id: string
+      title: string
+      mp_id: string
+      publish_time: number
+      publish_date: string
+    }>
+    dry_run?: boolean
+    days?: number
+    mp_id?: string
+    physical_delete?: boolean
+  }
+}
+
+/**
+ * 清理指定天数前的旧文章
+ * @param params 清理参数
+ * @returns 清理结果
+ */
+export const cleanOldArticles = (params: CleanOldArticlesParams = {}) => {
+  return http.delete<CleanOldArticlesResult>(`/wx/articles/clean-old`, {
+    params: {
+      days: params.days || 3,
+      mp_id: params.mp_id,
+      dry_run: params.dry_run || false
+    }
+  })
+}
+
+/**
  * 切换文章阅读状态
  * @param id 文章ID
  * @param is_read 阅读状态

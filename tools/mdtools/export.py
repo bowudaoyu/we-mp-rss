@@ -1,7 +1,7 @@
 from .md2doc import MarkdownToWordConverter
 from core.models import Article
 from core.db import DB
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import csv
 import zipfile
@@ -14,91 +14,161 @@ def process_single_article(art, add_title, remove_images, remove_links, export_m
                           docx_path, writer):
     """
     处理单篇文章的导出逻辑
+    重构：
+    - export_docx 使用 pdf2docx 转换（先生成 PDF，再转为 DOCX）
+    - export_md 使用 html2doc (html2markdown) 转换
+    - export_pdf 使用原有的 PDF 转换
     返回是否成功处理
     """
     from core.content_format import format_content
     from core.common.file_tools import sanitize_filename
     
-    markdown_content = format_content(art.content, "markdown")
-    
-    # 转换为文档对象（不保存文件）
-    # 只有在需要导出docx时才进行转换
-    document = None
-    if export_docx or export_pdf:
-        md = MarkdownToWordConverter({
-            'remove_links': remove_links,
-            'remove_images': remove_images,
-            'default_font': 'SimSun'
-        })
-        if add_title:
-            markdown_content = f"# {art.title}\n\n{markdown_content}"
-        document = md.convert_to_document(markdown_content, None)
-        
     # 检查是否需要导出任何格式的文件
-    if export_docx and document or export_md or export_json or export_csv or export_pdf:
-        print(art.id, art.title, art.id)
-        name = datetime.fromtimestamp(art.publish_time).strftime("%Y%m%d") + "_" + art.title
-        filename = sanitize_filename(name) + ".docx"
-        json_filename = sanitize_filename(name) + ".json"
-        md_filename = sanitize_filename(name) + ".md"
-        pdf_filename = sanitize_filename(name) + ".pdf"
-        json_content = {
-            "id": art.id,
-            "url": art.url,
-            "title": art.title,
-            "pic_url": art.pic_url,
-            "description": art.description,
-            "status": art.status,
-            "publish_time": art.publish_time
-        }
-        try:
-            # 保存json文件（仅在需要时）
-            if export_json:
-                with open(f"{docx_path}{json_filename}", "w", encoding="utf-8") as f:
-                    f.write(json.dumps(json_content))
-            
-            # 保存md文件（仅在需要时）
-            if export_md:
-                with open(f"{docx_path}{md_filename}", "w", encoding="utf-8") as f:
-                    f.write(markdown_content)
-
-            # 保存为PDF文档（仅在需要时）
-            if export_pdf and document:
-                # 先保存为临时docx文件，然后转换为PDF
-                temp_docx = f'{docx_path}{filename}'
-                document.save(temp_docx)
-                try:
-                    from doc2pdf.dpdf import docx_to_pdf
-                    docx_to_pdf(temp_docx, f'{docx_path}{pdf_filename}')
-                    # 删除临时docx文件
-                    os.remove(temp_docx)
-                except Exception as e:
-                    print_error(f"PDF转换失败: {e}")
-                    # 删除临时文件
-                    if os.path.exists(temp_docx):
-                        os.remove(temp_docx)
-            
-            # 保存为Word文档（仅在需要时）
-            if export_docx and document:
-                document.save(f'{docx_path}{filename}')
+    if not (export_md or export_docx or export_json or export_csv or export_pdf):
+        return False
+    
+    print(art.id, art.title, art.id)
+    
+    # 生成文件名
+    name = datetime.fromtimestamp(art.publish_time, tz=timezone.utc).strftime("%Y%m%d") + "_" + art.title
+    filename = sanitize_filename(name) + ".docx"
+    json_filename = sanitize_filename(name) + ".json"
+    md_filename = sanitize_filename(name) + ".md"
+    pdf_filename = sanitize_filename(name) + ".pdf"
+    
+    # JSON 内容
+    json_content = {
+        "id": art.id,
+        "url": art.url,
+        "title": art.title,
+        "pic_url": art.pic_url,
+        "description": art.description,
+        "status": art.status,
+        "publish_time": art.publish_time
+    }
+    
+    try:
+        # 获取文章 HTML 内容
+        html_content = art.content if hasattr(art, 'content') and art.content else ""
+        
+        # 步骤1: 导出 Markdown（使用 html2doc）
+        md_generated = False
+        if export_md and html_content:
+            try:
+                from tools.mdtools.html2doc import html_to_markdown_file
                 
-            # 纪录导出文章列表（仅在需要时）
-            if export_csv and writer:
-                writer.writerow([art.title, art.url, datetime.fromtimestamp(art.publish_time).strftime("%Y-%m-%d %H:%M:%S")])
-            
-            exported_files = []
-            if export_json: exported_files.append("JSON")
-            if export_md: exported_files.append("MD")
-            if export_docx and document: exported_files.append("DOCX")
-            if export_pdf and document: exported_files.append("PDF")
-            if export_csv: exported_files.append("CSV")
-            
+                md_full_path = f"{docx_path}{md_filename}"
+                
+                # 配置选项
+                config = {
+                    'remove_images': remove_images,
+                    'remove_links': remove_links,
+                }
+                
+                # 转换 HTML 为 Markdown
+                document_title = art.title if add_title else None
+                success = html_to_markdown_file(html_content, md_full_path, document_title, config)
+                
+                if success:
+                    print_success(f"Markdown文件已生成: {md_filename}")
+                    md_generated = True
+                else:
+                    print_error(f"Markdown文件生成失败: {md_filename}")
+                    
+            except ImportError as e:
+                print_error(f"html2doc依赖缺失: {e}")
+            except Exception as e:
+                print_error(f"HTML转Markdown失败: {e}")
+        
+        # 步骤2: 生成 PDF（如果需要导出 DOCX 或 PDF）
+        pdf_generated = False
+        if export_docx or export_pdf:
+            try:
+                from tools.mdtools.pdf import url_to_pdf
+                pdf_full_path = f"{docx_path}{pdf_filename}"
+                from core.config import cfg
+                browser_type = cfg.get("gather.browser_type", "webkit")
+                port=cfg.get("port","8001")
+                url=art.url if art.content =="" else f"http://127.0.0.1:{port}/views/print/{art.id}"
+                url_to_pdf(url, pdf_full_path, browser_type=str(browser_type))
+                
+                # 验证PDF文件是否生成
+                if not os.path.exists(pdf_full_path):
+                    raise RuntimeError(f"PDF文件生成失败: {pdf_full_path}")
+                
+                print_success(f"PDF文件已生成: {pdf_filename}")
+                pdf_generated = True
+                
+            except ImportError as e:
+                print_error(f"PDF转换依赖缺失: {e}")
+            except Exception as e:
+                print_error(f"PDF转换失败: {e}")
+        
+        # 步骤3: 导出 DOCX（使用 pdf2docx）
+        docx_generated = False
+        if export_docx and pdf_generated:
+            try:
+                from tools.mdtools.pdf_extractor import pdf_to_docx
+                
+                pdf_full_path = f"{docx_path}{pdf_filename}"
+                docx_full_path = f"{docx_path}{filename}"
+                
+                # 从 PDF 转换为 DOCX（优先使用 pdf2docx 库）
+                success = pdf_to_docx(pdf_full_path, docx_full_path)
+                
+                if success:
+                    print_success(f"DOCX文件已生成: {filename}")
+                    docx_generated = True
+                else:
+                    print_error(f"DOCX文件生成失败: {filename}")
+                    
+            except ImportError as e:
+                print_error(f"pdf2docx依赖缺失: {e}")
+            except Exception as e:
+                print_error(f"PDF转DOCX失败: {e}")
+        
+        # 步骤4: 保存 JSON 文件（如果需要）
+        json_generated = False
+        if export_json:
+            try:
+                json_full_path = f"{docx_path}{json_filename}"
+                with open(json_full_path, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(json_content, ensure_ascii=False, indent=2))
+                json_generated = True
+            except Exception as e:
+                print_error(f"JSON文件保存失败: {e}")
+        
+        # 步骤5: 记录到 CSV（如果需要）
+        csv_generated = False
+        if export_csv and writer:
+            try:
+                writer.writerow([
+                    art.title, 
+                    art.url, 
+                    datetime.fromtimestamp(art.publish_time, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                ])
+                csv_generated = True
+            except Exception as e:
+                print_error(f"CSV记录失败: {e}")
+        
+        # 汇总导出结果
+        exported_files = []
+        if json_generated: exported_files.append("JSON")
+        if md_generated: exported_files.append("MD")
+        if docx_generated: exported_files.append("DOCX")
+        if pdf_generated: exported_files.append("PDF")
+        if csv_generated: exported_files.append("CSV")
+        
+        if exported_files:
             print_success(f"文件已保存: {', '.join(exported_files)} - {name}")
             return True
-        except Exception as e:
-            print_error(f"保存文档失败: {e}")
+        else:
+            print_error(f"没有文件被成功导出: {name}")
             return False
-    return False
+            
+    except Exception as e:
+        print_error(f"保存文档失败: {e}")
+        return False
 
 def process_articles(session, mp_id=None,doc_id=None, page_size=10, page_count=1, add_title=True, document_id=None,
                     remove_images=False, remove_links=False, export_md=True, 
@@ -186,7 +256,7 @@ def export_md_to_doc(mp_id:str=None,doc_id:list=None,page_size:int=10,page_count
     # 打包所有导出的文件为zip并删除源文件
     if record_count > 0:
         if not zip_filename:
-            zip_filename = f"{docx_path}exported_articles_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            zip_filename = f"{docx_path}exported_articles_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}.zip"
         else:
             zip_filename = f"{docx_path}{zip_filename}"
             if not zip_filename.endswith('.zip'):

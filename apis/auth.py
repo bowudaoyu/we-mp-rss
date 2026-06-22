@@ -10,7 +10,12 @@ from core.auth import (
     list_user_aks,
     deactivate_ak,
     delete_ak,
-    update_ak
+    update_ak,
+    create_password_reset_code,
+    verify_reset_code,
+    reset_user_password,
+    send_reset_code_notice,
+    get_user
 )
 from .ver import API_VERSION
 from .base import success_response, error_response
@@ -22,6 +27,7 @@ from typing import Optional
 router = APIRouter(prefix=f"/auth", tags=["认证"])
 from driver.success import Success
 from driver.wx_api import get_qr_code #通过API登录
+from driver.wx import WX_API
 def ApiSuccess(data):
     if data != None:
             print("\n登录结果:")
@@ -45,7 +51,7 @@ async def qr_status(current_user=Depends(get_current_user)):
      return success_response(WX_API.QrStatus())    
 @router.get("/qr/over",summary="扫码完成")
 async def qr_success(current_user=Depends(get_current_user)):
-     return success_response(WX_API.Close())    
+     return success_response(await WX_API.Close())    
 @router.post("/login", summary="用户登录")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(form_data.username, form_data.password)
@@ -304,4 +310,141 @@ async def delete_access_key(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_response(code=50001, message=f"删除失败: {str(e)}")
+        )
+
+
+# ===== 密码找回接口 =====
+
+class RequestResetCodeRequest(BaseModel):
+    """请求重置验证码"""
+    username: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """重置密码请求"""
+    username: str
+    code: str
+    new_password: str
+
+
+@router.post("/password/reset-request", summary="请求密码重置验证码")
+async def request_password_reset(req: RequestResetCodeRequest):
+    """
+    请求密码重置验证码
+    
+    验证码将通过系统通知（钉钉/飞书/微信等）发送给管理员
+    
+    用法示例：
+    ```
+    POST /api/v1/auth/password/reset-request
+    Content-Type: application/json
+    
+    {
+        "username": "your_username"
+    }
+    ```
+    """
+    try:
+        # 检查用户是否存在
+        user = get_user(req.username)
+        if not user:
+            # 不暴露用户是否存在的信息
+            return success_response(None, "如果用户存在，验证码已发送到系统通知")
+        
+        # 生成验证码
+        code = create_password_reset_code(req.username)
+        
+        # 发送通知
+        send_success = send_reset_code_notice(req.username, code)
+        
+        if not send_success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_response(code=50002, message="验证码发送失败，请检查系统通知配置（需在 config.yaml 中配置 notice.webhook）")
+            )
+        
+        return success_response(None, "验证码已发送，请联系管理员获取")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_response(code=50001, message=f"请求失败: {str(e)}")
+        )
+
+
+@router.post("/password/reset", summary="重置密码")
+async def reset_password(req: ResetPasswordRequest):
+    """
+    使用验证码重置密码
+    
+    用法示例：
+    ```
+    POST /api/v1/auth/password/reset
+    Content-Type: application/json
+    
+    {
+        "username": "your_username",
+        "code": "123456",
+        "new_password": "new_password_123"
+    }
+    ```
+    """
+    try:
+        # 验证验证码
+        if not verify_reset_code(req.username, req.code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_response(code=40001, message="验证码无效或已过期")
+            )
+        
+        # 验证新密码长度
+        if len(req.new_password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_response(code=40002, message="密码长度不能少于6位")
+            )
+        
+        # 重置密码
+        success = reset_user_password(req.username, req.new_password)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_response(code=50003, message="密码重置失败")
+            )
+        
+        return success_response(None, "密码重置成功，请使用新密码登录")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_response(code=50001, message=f"重置失败: {str(e)}")
+        )
+
+
+@router.post("/switch", summary="切换微信账号")
+async def switch_wechat_account(current_user: dict = Depends(get_current_user)):
+    """
+    切换微信公众号账号
+    
+    用法示例：
+    ```
+    POST /api/v1/auth/switch
+    Authorization: Bearer {token}
+    ```
+    """
+    import asyncio
+
+    try:
+        # 调用切换账号方法（异步）
+        result = await WX_API.switch_account()
+        return success_response(result, "切换账号成功" if result else "切换账号失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_response(code=50001, message=f"切换账号失败: {str(e)}")
         )

@@ -42,40 +42,41 @@ def build_article_url(article: Any) -> str:
     return f"https://mp.weixin.qq.com/s/{origin_id}"
 
 
-def _fetch_with_web(url: str) -> str:
+def _fetch_with_web(url: str) -> Tuple[str, Any]:
     from driver.wxarticle import Web
 
     result = Web.get_article_content(url) or {}
-    return (result.get("content") or "").strip()
+    return (result.get("content") or "").strip(),result
 
 
-def _fetch_with_api(url: str) -> str:
+def _fetch_with_api(url: str) -> Tuple[str, Any]:
     from core.wx.model.api import MpsApi
-
     fetcher = MpsApi()
-    return (fetcher.content_extract(url) or "").strip()
+    return (fetcher.content_extract(url) or "").strip(),{}
 
 
-def fetch_article_content(url: str, preferred_mode: str | None = None) -> Tuple[str, str]:
+def fetch_article_content(url: str, preferred_mode: str | None = None) -> Tuple[str, str,str]:
     mode = normalize_content_mode(preferred_mode)
     modes = [mode] + [item for item in ("web", "api") if item != mode]
 
     for current_mode in modes:
         try:
             if current_mode == "api":
-                content = _fetch_with_api(url)
+                content,result = _fetch_with_api(url)
             else:
-                content = _fetch_with_web(url)
+                content,result = _fetch_with_web(url)
+            print(result)
+            article_type = result.get("article_type", "")
         except Exception as exc:
             print_warning(f"fetch article content failed in {current_mode} mode: {exc}")
             continue
 
         if content == "DELETED":
-            return content, current_mode
+            return content, current_mode,article_type
         if content:
-            return content, current_mode
+            return content, current_mode,article_type
 
-    return "", mode
+    return "", mode,article_type
 
 
 def sync_article_content(
@@ -86,6 +87,12 @@ def sync_article_content(
 ) -> Tuple[bool, str]:
     existing_content = (getattr(article, "content", "") or "").strip()
     if existing_content and not force:
+        if getattr(article, "has_content", 0) == 0:
+            print_info(f"article {article.id} already has content, skipping fetch")
+            article.has_content = 1
+            session.commit()
+            session.refresh(article)
+            return True, "cached"
         return False, "cached"
 
     article_url = build_article_url(article)
@@ -93,7 +100,7 @@ def sync_article_content(
         print_warning(f"article {getattr(article, 'id', '')} has no valid url")
         return False, "missing_url"
 
-    content, mode = fetch_article_content(article_url, preferred_mode)
+    content, mode, article_type = fetch_article_content(article_url, preferred_mode)
     if not content:
         return False, mode
 
@@ -102,6 +109,7 @@ def sync_article_content(
             article.content = ""
             article.content_html = ""
             article.status = DATA_STATUS.DELETED
+            article.has_content = 0
             session.commit()
             session.refresh(article)
             print_info(f"article {article.id} marked as deleted via {mode}")
@@ -112,13 +120,25 @@ def sync_article_content(
 
         article.content = content
         article.content_html = fix_html(content)
+        article.show_type=article_type or article.show_type
         article.status = DATA_STATUS.ACTIVE
+        article.has_content = 1
         if not (getattr(article, "description", "") or "").strip():
             article.description = Web.get_description(content)
+        # 修正成功,重置失败计数
+        if hasattr(article, 'fix_fail_count'):
+            article.fix_fail_count = 0
         session.commit()
         session.refresh(article)
         print_info(f"article {article.id} content synced via {mode}")
         return True, mode
     except Exception:
+        # 修正失败,增加失败计数
+        if hasattr(article, 'fix_fail_count'):
+            article.fix_fail_count = (article.fix_fail_count or 0) + 1
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
         session.rollback()
         raise

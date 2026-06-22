@@ -5,6 +5,7 @@ from core.models.feed import Feed
 from core.models.message_task import MessageTask
 from core.models.cascade_node import CascadeNode, CascadeSyncLog
 from core.models.cascade_task_allocation import CascadeTaskAllocation
+from core.models.filter_rule import FilterRule
 from core.db import Db,DB
 from core.config import cfg
 from core.auth import pwd_context
@@ -15,13 +16,28 @@ def init_user(_db: Db):
     try:
       username,password=os.getenv("USERNAME", "admin"),os.getenv("PASSWORD", "admin@123")
       session=_db.get_session()
-      session.add(User(
-          id=0,
-          username=username,
-          password_hash=pwd_context.hash(password),
+      
+      # 检查用户是否已存在
+      existing_user = session.query(User).filter(User.username == username).first()
+      
+      if existing_user:
+          # 用户已存在，更新为管理员权限
+          existing_user.role = 'admin'
+          existing_user.is_active = True
+          session.commit()
+          print_info(f"用户已存在，已更新为管理员权限：{username}")
+      else:
+          # 用户不存在，创建新用户
+          import uuid
+          session.add(User(
+              id=0,
+              username=username,
+              password_hash=pwd_context.hash(password),
+              role='admin',
+              is_active=True,
           ))
-      session.commit()
-      print_info(f"初始化用户成功,请使用以下凭据登录：{username}")
+          session.commit()
+          print_info(f"初始化用户成功,请使用以下凭据登录：{username}")
     except Exception as e:
         # print_error(f"Init error: {str(e)}")
         pass

@@ -50,6 +50,12 @@
                 登录
               </a-button>
             </a-form-item>
+            
+            <a-form-item>
+              <div class="login-extra">
+                <a-link @click="goToForgotPassword">忘记密码？</a-link>
+              </div>
+            </a-form-item>
           </a-form>
         </a-card>
       </div>
@@ -120,6 +126,10 @@ const handleSubmit = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const goToForgotPassword = () => {
+  router.push('/forgot-password')
 }
 </script>
 
@@ -370,6 +380,20 @@ const handleSubmit = async () => {
 :deep(.arco-form-item-error .arco-input-wrapper) {
   border-color: #e53e3e;
   background-color: #fff5f5;
+}
+
+.login-extra {
+  width: 100%;
+  text-align: right;
+}
+
+.login-extra :deep(.arco-link) {
+  color: #4299e1;
+  font-size: 14px;
+}
+
+.login-extra :deep(.arco-link:hover) {
+  color: #3182ce;
 }
 
 :deep(.arco-form-message) {

@@ -37,7 +37,12 @@ def _get_active_refresh_task(article_id: str):
     return None
 
 
-def _run_refresh_article_task(task_id: str, article_id: str):
+def _run_refresh_article_task_wrapper(task_id: str, article_id: str):
+    """包装器:在线程中运行 async 函数"""
+    import asyncio
+    asyncio.run(_run_refresh_article_task(task_id, article_id))
+
+async def _run_refresh_article_task(task_id: str, article_id: str):
     session = DB.get_session()
     fetcher = None
     try:
@@ -69,9 +74,9 @@ def _run_refresh_article_task(task_id: str, article_id: str):
             return
 
         fetcher = WXArticleFetcher()
-        fetched = fetcher.get_article_content(target_url)
+        fetched = await fetcher.get_article_content(target_url)
         fetched_content = fetched.get("content")
-
+        article.show_type=fetched.get("article_type",article.show_type )
         if fetched_content != "DELETED" and not fetched_content:
             fetch_error = fetched.get("fetch_error") or "文章内容抓取为空"
             _set_refresh_task(task_id, {
@@ -89,9 +94,11 @@ def _run_refresh_article_task(task_id: str, article_id: str):
         if fetched_content == "DELETED":
             article.description = fetched.get("description") or article.description
         else:
-            article.description = fetched.get("description") or fetcher.get_description(article.content or "")
+            article.description = fetched.get("description") or article.description
         article.pic_url = fetched.get("topic_image") or fetched.get("pic_url") or article.pic_url
         article.status = DATA_STATUS.DELETED if fetched_content == "DELETED" else DATA_STATUS.ACTIVE
+        # 更新 has_content 字段
+        article.has_content = 1 if (article.content and article.content.strip()) else 0
 
         now_seconds = int(time.time())
         now_millis = int(time.time() * 1000)
@@ -120,11 +127,6 @@ def _run_refresh_article_task(task_id: str, article_id: str):
             "message": f"文章刷新失败: {str(e)}"
         })
     finally:
-        if fetcher is not None:
-            try:
-                fetcher.Close()
-            except Exception:
-                pass
         session.close()
 
 
@@ -165,6 +167,156 @@ async def clean_orphan_articles(
                 message="清理无效文章失败"
             )
         )
+    finally:
+        session.close()
+
+
+@router.delete("/clean-old", summary="清理指定天数前的旧文章")
+async def clean_old_articles(
+    days: int = Query(3, ge=1, le=365, description="清理多少天前的文章，默认3天"),
+    mp_id: str = Query(None, description="公众号ID，不指定则清理所有公众号"),
+    dry_run: bool = Query(False, description="是否只预览不实际删除"),
+    current_user: dict = Depends(get_current_user_or_ak)
+):
+    """
+    清理指定天数前的旧文章
+    
+    Args:
+        days: 清理多少天前的文章，默认3天
+        mp_id: 公众号ID，不指定则清理所有公众号
+        dry_run: 是否只预览不实际删除（用于确认要删除的文章）
+    
+    Returns:
+        删除结果，包含删除数量和预览信息
+    """
+    import time as time_module
+    from datetime import datetime, timedelta
+    
+    session = DB.get_session()
+    try:
+        # 计算截止时间戳（N天前）
+        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_timestamp = int(cutoff_date.timestamp())
+        
+        print_info(f"清理旧文章: 截止日期={cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}, 时间戳={cutoff_timestamp}")
+        
+        # 构建查询 - 只查询未删除的文章
+        query = session.query(Article).filter(
+            Article.publish_time < cutoff_timestamp,
+            Article.status != DATA_STATUS.DELETED  # 排除已删除的文章
+        )
+        
+        # 如果指定了公众号ID，只删除该公众号的文章
+        if mp_id:
+            query = query.filter(Article.mp_id == mp_id)
+        
+        # 先获取总数
+        total_count = query.count()
+        print_info(f"符合条件的文章总数: {total_count}")
+        
+        # 获取预览文章（最多100条）
+        articles_to_delete = query.limit(100).all()
+        
+        # 调试：打印一些文章的时间信息
+        if articles_to_delete:
+            print_info(f"示例文章时间信息:")
+            for i, article in enumerate(articles_to_delete[:5]):
+                try:
+                    if article.publish_time:
+                        # 检查时间戳是否合理（秒级 vs 毫秒级）
+                        if article.publish_time > 10000000000:  # 毫秒级时间戳
+                            publish_date = datetime.fromtimestamp(article.publish_time / 1000)
+                            print_info(f"  [{i}] 毫秒时间戳: {article.publish_time} -> {publish_date}")
+                        else:
+                            publish_date = datetime.fromtimestamp(article.publish_time)
+                            print_info(f"  [{i}] 秒时间戳: {article.publish_time} -> {publish_date}")
+                    else:
+                        print_info(f"  [{i}] publish_time 为空")
+                except Exception as e:
+                    print_error(f"  [{i}] 时间解析失败: {article.publish_time}, 错误: {e}")
+        
+        # 预览信息
+        preview = []
+        for article in articles_to_delete[:20]:  # 最多显示20条预览
+            try:
+                if article.publish_time:
+                    # 处理毫秒级时间戳
+                    if article.publish_time > 10000000000:
+                        publish_date = datetime.fromtimestamp(article.publish_time / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        publish_date = datetime.fromtimestamp(article.publish_time).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    publish_date = None
+                    
+                preview.append({
+                    "id": article.id,
+                    "title": article.title,
+                    "mp_id": article.mp_id,
+                    "publish_time": article.publish_time,
+                    "publish_date": publish_date
+                })
+            except Exception as e:
+                print_error(f"预览文章 {article.id} 时间解析失败: {e}")
+                preview.append({
+                    "id": article.id,
+                    "title": article.title,
+                    "mp_id": article.mp_id,
+                    "publish_time": article.publish_time,
+                    "publish_date": None
+                })
+        
+        if dry_run:
+            # 只预览，不实际删除
+            return success_response({
+                "message": f"预览：将删除 {total_count} 篇 {days} 天前的文章",
+                "total_count": total_count,
+                "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S"),
+                "cutoff_timestamp": cutoff_timestamp,
+                "preview_count": len(preview),
+                "preview": preview,
+                "dry_run": True,
+                "days": days
+            })
+        
+        # 实际删除
+        if cfg.get("article.true_delete", False):
+            # 物理删除
+            deleted_count = query.delete(synchronize_session=False)
+        else:
+            # 逻辑删除（更新状态为 DELETED）
+            deleted_count = query.update(
+                {Article.status: DATA_STATUS.DELETED},
+                synchronize_session=False
+            )
+        
+        session.commit()
+        
+        # 清除相关缓存
+        clear_cache_pattern("articles_list")
+        clear_cache_pattern("article_detail")
+        clear_cache_pattern("home_page")
+        clear_cache_pattern("tag_detail")
+        
+        return success_response({
+            "message": f"成功删除 {deleted_count} 篇 {days} 天前的文章",
+            "deleted_count": deleted_count,
+            "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "days": days,
+            "mp_id": mp_id,
+            "physical_delete": cfg.get("article.true_delete", False)
+        })
+    except Exception as e:
+        session.rollback()
+        print_error(f"清理旧文章错误: {str(e)}")
+        raise HTTPException(
+            status_code=fast_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_response(
+                code=50001,
+                message=f"清理旧文章失败: {str(e)}"
+            )
+        )
+    finally:
+        session.close()
 
 @router.put("/{article_id}/read", summary="改变文章阅读状态")
 async def toggle_article_read_status(
@@ -280,40 +432,59 @@ async def clean_duplicate(
 async def get_articles(
     offset: int = Query(0, ge=0),
     limit: int = Query(5, ge=1, le=100),
-    status: str = Query(None),
+    status: str = Query(None, description="文章状态，多个用逗号分隔，如: updating,deleted"),
     search: str = Query(None),
     mp_id: str = Query(None),
     only_favorite: bool = Query(False),
-    has_content:bool=Query(False),
+    has_content: bool = Query(None, description="是否有正文: true=有, false=无, 不传=全部"),
     current_user: dict = Depends(get_current_user_or_ak)
 ):
     session = DB.get_session()
     try:
-      
-        
-        # 构建查询条件
+
+        # 状态字符串到状态码的映射
+        status_map = {
+            'deleted': DATA_STATUS.DELETED,
+            'updating': DATA_STATUS.FETCHING,
+            'active': DATA_STATUS.ACTIVE,
+            'inactive': DATA_STATUS.INACTIVE,
+            'pending': DATA_STATUS.PENDING,
+            'completed': DATA_STATUS.COMPLETED,
+            'failed': DATA_STATUS.FAILED,
+        }
+
+        # 构建查询条件 - 使用 ArticleBase 模型（不包含 content 字段，加速查询）
         query = session.query(ArticleBase)
-        if has_content:
-            query=session.query(Article)
+
+        # 支持多个状态值（逗号分隔），将字符串映射为状态码
         if status:
-            query = query.filter(Article.status == status)
+            status_list = [s.strip() for s in status.split(',') if s.strip()]
+            status_codes = [status_map.get(s) for s in status_list if status_map.get(s) is not None]
+            if status_codes:
+                query = query.filter(Article.status.in_(status_codes))
+            else:
+                # 无有效状态码时，默认排除已删除
+                query = query.filter(Article.status != DATA_STATUS.DELETED)
         else:
             query = query.filter(Article.status != DATA_STATUS.DELETED)
         if mp_id:
             query = query.filter(Article.mp_id == mp_id)
         if only_favorite:
             query = query.filter(Article.is_favorite == 1)
+        # 支持 has_content 参数：true=有正文，false=无正文，None=不筛选
+        if has_content is not None:
+            if has_content:
+                query = query.filter(Article.has_content == 1)
+            else:
+                query = query.filter(Article.has_content == 0)
         if search:
-            query = query.filter(
-               format_search_kw(search)
-            )
+            query = query.filter(format_search_kw(search))
         
         # 获取总数
         total = query.count()
         query= query.order_by(Article.publish_time.desc()).offset(offset).limit(limit)
-        # query= query.order_by(Article.id.desc()).offset(offset).limit(limit)
         # 分页查询（按发布时间降序）
-        articles = query.all()
+        results = query.all()
         
         # 打印生成的 SQL 语句（包含分页参数）
         print_warning(query.statement.compile(compile_kwargs={"literal_binds": True}))
@@ -321,17 +492,18 @@ async def get_articles(
         # 查询公众号名称
         from core.models.feed import Feed
         mp_names = {}
-        for article in articles:
+        for article in results:
             if article.mp_id and article.mp_id not in mp_names:
                 feed = session.query(Feed).filter(Feed.id == article.mp_id).first()
                 mp_names[article.mp_id] = feed.mp_name if feed else "未知公众号"
-        
+
         # 合并公众号名称到文章列表
         article_list = []
-        for article in articles:
-            article_dict = article.__dict__
+        for article in results:
+            article_dict = article.__dict__.copy()
             article_dict["mp_name"] = mp_names.get(article.mp_id, "未知公众号")
             article_dict["is_favorite"] = int(getattr(article, "is_favorite", 0) or 0)
+            article_dict["has_content"] = int(getattr(article, "has_content", 0) or 0)
             article_list.append(article_dict)
         
         from .base import success_response
@@ -381,7 +553,7 @@ async def refresh_article(
         _set_refresh_task(task_id, task)
 
         threading.Thread(
-            target=_run_refresh_article_task,
+            target=_run_refresh_article_task_wrapper,
             args=(task_id, article_id),
             daemon=True
         ).start()
@@ -436,18 +608,7 @@ def get_article_detail(
                     message="文章不存在"
                 )
             )
-        if content:
-            updated, _ = sync_article_content(
-                session=session,
-                article=article,
-                preferred_mode=cfg.get("gather.content_mode", "web"),
-            )
-            if updated:
-                clear_cache_pattern("articles_list")
-                clear_cache_pattern("article_detail")
-                clear_cache_pattern("home_page")
-                clear_cache_pattern("tag_detail")
-        return success_response(fix_article(article))
+        return success_response(article)
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -483,7 +644,13 @@ async def delete_article(
         if cfg.get("article.true_delete", False):
             session.delete(article)
         session.commit()
-        
+
+        # 清理缓存，确保已删除的文章不会继续显示
+        clear_cache_pattern("articles_list")
+        clear_cache_pattern("article_detail")
+        clear_cache_pattern("home_page")
+        clear_cache_pattern("tag_detail")
+
         return success_response(None, message="文章已标记为删除")
     except Exception as e:
         session.rollback()

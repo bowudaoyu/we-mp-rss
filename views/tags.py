@@ -17,7 +17,6 @@ from core.cache import cache_view, clear_cache_pattern
 router = APIRouter(tags=["标签"])
 
 @router.get("/tags", response_class=HTMLResponse, summary="标签 - 显示所有标签")
-@cache_view("tags_page", ttl=1800)  # 缓存30分钟
 async def tags_view(
     request: Request,
     page: int = Query(1, ge=1, description="页码"),
@@ -87,6 +86,10 @@ async def tags_view(
         with open(template_path, 'r', encoding='utf-8') as f:
             template_content = f.read()
         
+        # 生成完整的分页URL
+        prev_url = f"/views/tags?page={page - 1}&limit={limit}" if has_prev else None
+        next_url = f"/views/tags?page={page + 1}&limit={limit}" if has_next else None
+        
         # 使用模板引擎渲染
         parser = TemplateParser(template_content, template_dir=base.public_dir)
         render_context = {
@@ -98,10 +101,9 @@ async def tags_view(
             "limit": limit,
             "has_prev": has_prev,
             "has_next": has_next,
-            "prev_page": page - 1 if has_prev else page,
-            "next_page": page + 1 if has_next else page,
+            "prev_url": prev_url,
+            "next_url": next_url,
             "breadcrumb": breadcrumb,
-            "base_url": "/views/tags",
             "item_name": "个标签"
         }
         html_content = parser.render(render_context)
@@ -132,7 +134,7 @@ async def tag_detail_view(
     request: Request,
     tag_id: str,
     page: int = Query(1, ge=1, description="页码"),
-    limit: int = Query(20, ge=1, le=100, description="每页文章数量"),
+    limit: int = Query(8, ge=1, le=20, description="每页文章数量"),
     keyword: Optional[str] = Query(None, description="搜索关键字")
 ):
     """
@@ -221,6 +223,16 @@ async def tag_detail_view(
             {"name": tag.name, "url": None}
         ]
         
+        # 生成完整的分页URL
+        def build_tag_page_url(page_num: int) -> str:
+            params = [f"page={page_num}", f"limit={limit}"]
+            if keyword:
+                params.append(f"keyword={keyword}")
+            return f"/views/tag/{tag_id}?" + "&".join(params)
+        
+        prev_url = build_tag_page_url(page - 1) if has_prev else None
+        next_url = build_tag_page_url(page + 1) if has_next else None
+        
         # 读取模板文件
         template_path = base.tags_articles_template
         with open(template_path, 'r', encoding='utf-8') as f:
@@ -237,12 +249,11 @@ async def tag_detail_view(
             "limit": limit,
             "has_prev": has_prev,
             "has_next": has_next,
+            "prev_url": prev_url,
+            "next_url": next_url,
             "breadcrumb": breadcrumb,
-            "base_url": f"/views/tag/{tag_id}",
             "item_name": "篇文章",
-            "keyword": keyword,
-            "prev_page": page - 1,
-            "next_page": page + 1
+            "keyword": keyword
         })
         
         return HTMLResponse(content=html_content)

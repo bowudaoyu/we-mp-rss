@@ -180,4 +180,4 @@ def process_content_images(content: str) -> str:
     """处理文章内容中的图片链接，添加前缀"""
     if not content:
         return content
-    return Web.proxy_images(content)
+    return Web.proxy_images(content,isProxy=False)

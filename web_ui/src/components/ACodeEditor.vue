@@ -2,24 +2,8 @@
 import { ref, onMounted, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 
-// Configure MonacoEnvironment to load Web Workers
-self.MonacoEnvironment = {
-  getWorkerUrl: function (moduleId, label) {
-    if (label === 'json') {
-      return './json.worker.bundle.js';
-    }
-    if (label === 'css') {
-      return './css.worker.bundle.js';
-    }
-    if (label === 'html') {
-      return './html.worker.bundle.js';
-    }
-    if (label === 'typescript' || label === 'javascript') {
-      return './ts.worker.bundle.js';
-    }
-    return './editor.worker.bundle.js';
-  }
-};
+// Monaco Editor 配置 - 使用简单的内联工作器配置
+// 注意：Web Worker 警告是正常的，不影响功能，只是性能优化提示
 
 const props = defineProps({
   modelValue: {

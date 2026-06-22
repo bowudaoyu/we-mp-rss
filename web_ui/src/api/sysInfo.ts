@@ -9,3 +9,8 @@ export const getSysResources = async (): Promise<any> => {
   const data = await http.get('/wx/sys/resources')
   return data
 }
+
+export const refreshArticleStats = async (): Promise<any> => {
+  const data = await http.post('/wx/sys/article/refresh')
+  return data
+}

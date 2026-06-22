@@ -90,11 +90,12 @@ class RSS:
             处理后的字符串，所有图片URL前添加了前缀
         """
         import re
-        try:
-            pattern = re.compile(r'(<img[^>]*src=["\'])(?!\/static\/res\/logo\/)([^"\']*)', re.IGNORECASE)
-            return pattern.sub(r'\1/static/res/logo/\2', text)
-        except:
-            return text
+        # try:
+        #     pattern = re.compile(r'(<img[^>]*src=["\'])(?!\/static\/res\/logo\/)([^"\']*)', re.IGNORECASE)
+        #     return pattern.sub(r'\1/static/res/logo/\2', text)
+        # except:
+        #     return text
+        return text
        
     def generate_rss(self,rss_list: dict, title: str = "Mp-We-Rss", 
                     link: str = "https://github.com/rachelos/we-mp-rss",

@@ -27,10 +27,10 @@ packages=("wget" "git" "build-essential" "zlib1g-dev"
 
 
 
-if [ "$EXPORT_PDF" = "True" ]; then
-    echo "添加libreoffice依赖包..."
-    packages+=("fonts-noto-cjk" "libreoffice")
-fi
+# if [ "$EXPORT_PDF" = "True" ]; then
+#     echo "添加libreoffice依赖包..."
+#     packages+=("fonts-noto-cjk" "libreoffice")
+# fi
 
 echo "检查依赖包安装状态..."
 for package in "${packages[@]}"; do

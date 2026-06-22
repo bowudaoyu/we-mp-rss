@@ -104,3 +104,23 @@ export const logout = () => {
 export const getCurrentUser = () => {
   return http.get('/wx/user')
 }
+
+// ===== 密码找回相关 =====
+
+export interface RequestResetCodeParams {
+  username: string
+}
+
+export interface ResetPasswordParams {
+  username: string
+  code: string
+  new_password: string
+}
+
+export const requestResetCode = (data: RequestResetCodeParams) => {
+  return http.post('/wx/auth/password/reset-request', data)
+}
+
+export const resetPassword = (data: ResetPasswordParams) => {
+  return http.post('/wx/auth/password/reset', data)
+}

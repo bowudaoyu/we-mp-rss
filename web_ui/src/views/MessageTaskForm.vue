@@ -180,11 +180,11 @@ onMounted(() => {
               <a-link href="https://open.dingtalk.com/document/orgapp/obtain-the-webhook-address-of-a-custom-robot" target="_blank">如何获取WebHook</a-link>
             </a-form-item>
 
-            <a-form-item label="cron表达式" field="cron_exp" required>
+            <a-form-item label="Cron表达式" field="cron_exp" required>
               <a-space>
                 <a-input
                   v-model="formData.cron_exp"
-                  placeholder="请输入cron表达式"
+                  placeholder="请输入Cron表达式"
                   readonly
                   style="width: 300px"
                 />
@@ -251,7 +251,7 @@ onMounted(() => {
       <!-- cron表达式选择器模态框 -->
       <a-modal
         v-model:visible="showCronPicker"
-        title="选择cron表达式"
+        title="选择Cron表达式"
         :footer="false"
         width="800px"
       >

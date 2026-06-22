@@ -180,7 +180,7 @@ export interface FeedStatusResponse {
 }
 
 // 获取公众号更新状态
-export const getFeedStatus = (params?: { feed_id?: string; limit?: number; offset?: number }) => {
+export const getFeedStatus = (params?: { feed_id?: string; limit?: number; offset?: number; sort_by?: string; sort_order?: 'asc' | 'desc' }) => {
   return http.get<FeedStatusResponse>('/wx/cascade/feed-status', { params })
 }
 

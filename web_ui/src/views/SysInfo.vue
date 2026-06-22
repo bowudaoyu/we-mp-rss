@@ -4,6 +4,17 @@
        <SystemResources :resources="sysInfo.resources" />
     </a-card>
     <a-card :bordered="false" class="sys-info-card" title="文章统计">
+      <template #extra>
+        <a-button 
+          type="primary" 
+          size="small" 
+          :loading="refreshing"
+          @click="handleRefreshArticleStats"
+        >
+          <template #icon><reload-outlined /></template>
+          刷新
+        </a-button>
+      </template>
       <a-descriptions bordered :column="{ xs: 1, sm: 1, md: 1, lg: 2 }">
          <a-descriptions-item label="公众号总数">
           <template #label> <desktop-outlined /> 公众号总数 </template>
@@ -99,9 +110,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { getSysInfo } from "@/api/sysInfo";
+import { getSysInfo, refreshArticleStats } from "@/api/sysInfo";
 import type { SysInfo } from "@/api/sysInfo";
 import SystemResources from "@/components/SystemResources.vue";
+import { message } from 'ant-design-vue';
+
+const refreshing = ref(false);
 
 const sysInfo = ref<SysInfo>({
   os: {
@@ -140,6 +154,24 @@ const formatUptime = (seconds: number): string => {
 // 定义打开链接的函数
 const openUpdateLink = () => {
   window.open("https://github.com/rachelos/we-mp-rss", "_blank");
+};
+
+// 手动刷新文章统计
+const handleRefreshArticleStats = async () => {
+  try {
+    refreshing.value = true;
+    await refreshArticleStats();
+    message.success('文章统计刷新任务已启动,请稍后刷新页面查看最新数据');
+    // 3秒后自动刷新数据
+    setTimeout(async () => {
+      sysInfo.value = await getSysInfo();
+      message.success('文章统计已更新');
+    }, 3000);
+  } catch (error: any) {
+    message.error(error.message || '刷新失败');
+  } finally {
+    refreshing.value = false;
+  }
 };
 
 onMounted(async () => {

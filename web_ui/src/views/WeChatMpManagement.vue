@@ -20,6 +20,13 @@
             <a-button size="mini" @click="editMp(record)">编辑</a-button>
             <a-button 
               size="mini" 
+              type="outline"
+              @click="goToFilterRules(record.id)"
+            >
+              规则
+            </a-button>
+            <a-button 
+              size="mini" 
               status="danger" 
               @click="deleteMp(record.mp_id)"
             >
@@ -63,8 +70,12 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { getSubscriptions, addSubscription, updateSubscription, deleteSubscription } from '@/api/subscription'
 import { getToken } from '@/utils/auth'
+import { Message } from '@arco-design/web-vue'
+
+const router = useRouter()
 
 const headers = { Authorization: `Bearer ${getToken()}` }
 
@@ -143,6 +154,10 @@ const handleOk = async () => {
 const deleteMp = async (id) => {
   await deleteSubscription(id)
   loadData()
+}
+
+const goToFilterRules = (mpId: string) => {
+  router.push({ path: '/filter-rules', query: { mp_id: mpId } })
 }
 
 const handlePageChange = (page) => {

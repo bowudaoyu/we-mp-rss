@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { Message } from '@arco-design/web-vue'
 
 const props = defineProps({
   modelValue: {
@@ -16,11 +17,32 @@ const days = ref('*')
 const months = ref('*')
 const weekdays = ref('*')
 
+// 手动输入模式
+const manualInputMode = ref(false)
+
+// 表单模型（用于解决 a-form 的 model 警告）
+const formModel = ref({
+  manualExpression: ''
+})
+
+// 初始化时解析传入的表达式
+onMounted(() => {
+  if (props.modelValue) {
+    parseExpression(props.modelValue)
+  }
+})
+
 const parseCronDescription = (part: string, type: string) => {
   if (part === '*') return `每${type}`
   if (part.startsWith('*/')) {
     const num = part.substring(2)
     return `每${num}${type}`
+  }
+  // 支持 9-23/3 这种格式（范围+步长）
+  if (part.includes('/') && part.includes('-')) {
+    const [range, step] = part.split('/')
+    const [start, end] = range.split('-')
+    return `${start}到${end}${type}每${step}${type}`
   }
   if (part.includes('-')) {
     const [start, end] = part.split('-')
@@ -68,6 +90,8 @@ const cornDescription = computed(() => {
 
 const updateExpression = () => {
   emit('update:modelValue', cronExpression.value)
+  // 同步更新手动输入值
+  formModel.value.manualExpression = cronExpression.value
 }
 
 const parseExpression = (expr: string) => {
@@ -78,8 +102,99 @@ const parseExpression = (expr: string) => {
     days.value = parts[2]
     months.value = parts[3]
     weekdays.value = parts[4]
+    // 同步更新手动输入值
+    formModel.value.manualExpression = expr
   }
 }
+
+// 验证 cron 表达式
+const validateCronExpression = (expr: string): boolean => {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) {
+    Message.error('表达式格式错误：需要5个部分（分钟 小时 日 月 星期）')
+    return false
+  }
+  
+  const [min, hour, day, month, weekday] = parts
+  
+  // 简单验证各部分格式
+  const validatePart = (value: string, min: number, max: number, name: string): boolean => {
+    if (value === '*') return true
+    if (value.startsWith('*/')) {
+      const num = parseInt(value.substring(2))
+      if (isNaN(num) || num < 1 || num > max) {
+        Message.error(`${name}部分格式错误`)
+        return false
+      }
+      return true
+    }
+    if (value.includes(',') || value.includes('-') || value.includes('/')) {
+      return true // 复杂格式，不做详细验证
+    }
+    const num = parseInt(value)
+    if (isNaN(num) || num < min || num > max) {
+      Message.error(`${name}部分数值超出范围`)
+      return false
+    }
+    return true
+  }
+  
+  return validatePart(min, 0, 59, '分钟') &&
+         validatePart(hour, 0, 23, '小时') &&
+         validatePart(day, 1, 31, '日') &&
+         validatePart(month, 1, 12, '月') &&
+         validatePart(weekday, 0, 6, '星期')
+}
+
+// 应用手动输入的表达式
+const applyManualExpression = () => {
+  if (validateCronExpression(formModel.value.manualExpression)) {
+    parseExpression(formModel.value.manualExpression)
+    emit('update:modelValue', formModel.value.manualExpression)
+    Message.success('表达式已应用')
+  }
+}
+
+// 切换输入模式
+const toggleInputMode = () => {
+  manualInputMode.value = !manualInputMode.value
+  if (manualInputMode.value) {
+    // 切换到手动模式时，将当前选择器的值同步到手动输入框
+    formModel.value.manualExpression = cronExpression.value
+  } else {
+    // 切换到选择器模式时，解析手动输入的值并更新选择器
+    if (formModel.value.manualExpression) {
+      parseExpression(formModel.value.manualExpression)
+    }
+  }
+}
+
+// 监听 modelValue 变化，同步更新手动输入值
+watch(() => props.modelValue, (newVal) => {
+  if (newVal) {
+    // 无论在哪个模式，都要同步更新手动输入值
+    formModel.value.manualExpression = newVal
+    // 如果不在手动模式，也要解析表达式更新选择器
+    if (!manualInputMode.value) {
+      parseExpression(newVal)
+    }
+  }
+})
+
+// 监听手动输入变化，实时预览
+watch(() => formModel.value.manualExpression, (newVal) => {
+  if (manualInputMode.value && newVal && validateCronExpression(newVal)) {
+    // 在手动模式下，实时解析并更新选择器的值（但不触发emit，避免循环）
+    const parts = newVal.split(' ')
+    if (parts.length === 5) {
+      minutes.value = parts[0]
+      hours.value = parts[1]
+      days.value = parts[2]
+      months.value = parts[3]
+      weekdays.value = parts[4]
+    }
+  }
+})
 
 defineExpose({
   parseExpression
@@ -88,7 +203,27 @@ defineExpose({
 
 <template>
   <a-card class="cron-picker" :bordered="false">
-    <a-form>
+
+    <!-- 手动输入模式 -->
+    <div v-if="manualInputMode" class="manual-input-section">
+      <a-form :model="formModel">
+        <a-form-item label="Cron表达式">
+          <a-input 
+            v-model="formModel.manualExpression" 
+            placeholder="例如: 0 12 * * * (每天中午12点)"
+            @press-enter="applyManualExpression"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-button type="primary" @click="applyManualExpression">
+            应用表达式
+          </a-button>
+        </a-form-item>
+      </a-form>
+    </div>
+
+    <!-- 选择器模式 -->
+    <a-form v-if="!manualInputMode" :model="formModel">
       <a-form-item label="分钟">
         <a-select v-model="minutes" @change="updateExpression" style="width: 180px">
           <a-option v-for="m in 60" :key="m-1" :value="(m-1).toString()">{{ m-1 }}</a-option>
@@ -112,6 +247,7 @@ defineExpose({
           <a-option value="*/5">每5小时</a-option>
           <a-option value="*/8">每8小时</a-option>
           <a-option value="*/6">每6小时</a-option>
+          <a-option value="9-21/3">9-21点每3小时</a-option>
           <a-option value="*/12">每12小时</a-option>
           <a-option value="0-12">0-12点</a-option>
           <a-option value="12-23">12-23点</a-option>
@@ -153,10 +289,18 @@ defineExpose({
         </a-select>
       </a-form-item>
     </a-form>
-
+  <!-- 模式切换按钮 -->
+    <div class="mode-toggle">
+      <a-button 
+        :type="manualInputMode ? 'outline' : 'primary'" 
+        @click="toggleInputMode"
+      >
+        {{ manualInputMode ? '选择模式' : '手动输入' }}
+      </a-button>
+    </div>
     <a-space direction="vertical" fill>
       <a-typography-text strong>表达式预览: {{ cronExpression }}</a-typography-text>
-      <a-typography-text type="secondary">解释: {{ cornDescription }}</a-typography-text>
+      <a-typography-text type="secondary" style="color:green;">解释: {{ cornDescription }}</a-typography-text>
 
       <div class="examples">
         <a-typography-text strong>常用示例:</a-typography-text>
@@ -201,6 +345,17 @@ defineExpose({
 .cron-picker {
   padding: 10px;
   max-width: 600px;
+}
+
+.mode-toggle {
+  margin-bottom: 16px;
+}
+
+.manual-input-section {
+  margin-bottom: 16px;
+  padding: 16px;
+  background-color: var(--color-fill-2);
+  border-radius: 4px;
 }
 
 .arco-form-item {

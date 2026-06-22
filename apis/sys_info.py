@@ -64,9 +64,28 @@ async def system_resources(
             code=50002,
             message=f"获取系统资源失败: {str(e)}"
         )
-from core.article_lax import get_article_info
+from core.article_lax import get_article_info, refresh_article_info
 from .ver import API_VERSION
 from core.base import VERSION as CORE_VERSION,LATEST_VERSION
+
+@router.post("/article/refresh", summary="手动刷新文章统计")
+async def refresh_article_stats(
+    current_user: dict = Depends(get_current_user_or_ak)
+) -> Dict[str, Any]:
+    """手动刷新文章统计信息
+    
+    Returns:
+        BaseResponse格式的刷新结果
+    """
+    try:
+        refresh_article_info()
+        return success_response(message="文章统计刷新任务已启动")
+    except Exception as e:
+        return error_response(
+            code=50003,
+            message=f"刷新文章统计失败: {str(e)}"
+        )
+
 @router.get("/info", summary="获取系统信息")
 async def get_system_info(
     current_user: dict = Depends(get_current_user_or_ak)
@@ -82,7 +101,7 @@ async def get_system_info(
     """
     try:
       
-        wx_cfg.reload()
+        from driver.token import get as get_val
         # 获取系统信息
         system_info = {
             'os': {
@@ -103,8 +122,8 @@ async def get_system_info(
             'latest_version':LATEST_VERSION,
             'need_update':CORE_VERSION != LATEST_VERSION,
             "wx":{
-                'token':wx_cfg.get('token',''),
-                'expiry_time':wx_cfg.get('expiry.expiry_time','') if getStatus() else "",
+                'token':get_val('token',''),
+                'expiry_time':get_val('expiry.expiry_time','') if getStatus() else "",
                 "info":getLoginInfo(),
                 "login":getStatus(),
             },

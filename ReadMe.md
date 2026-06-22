@@ -71,6 +71,13 @@ A tool for subscribing to and managing WeChat Official Account content, providin
 - Custom RSS pagination size
 - Export to md/docx/pdf/json formats
 - API interface and WebHook support
+- HTML content filtering rules (global rules and MP-specific rules)
+- Multi-theme support (13 themes: Default Purple, Blue, Green, Orange, Rose, Teal, Pink, Indigo, Violet, Coffee, Navy, Dark Mode, Sepia)
+- Responsive pagination (PC: click navigation, Mobile: load more button)
+- **Cascade System**: Parent-child node architecture with intelligent task distribution for scaling collection capabilities
+- **Environment Exception Statistics**: Automatic tracking and statistics of environment exceptions when accessing WeChat articles
+- **Headers and Cookies Authentication**: Support custom headers and cookies in message tasks for authenticated webhook calls
+- **Configuration Cache**: Support Redis, Memcached, and memory caching for improved configuration read performance
 
 
 # ❤️ Sponsorship
@@ -102,6 +109,61 @@ The project adopts a front-end and back-end separation architecture:
 <img src="docs/架构原理.png" alt="Architecture Diagram" width="80%"/>
 
 For more project principles, please refer to the [Project Documentation](https://deepwiki.com/rachelos/we-mp-rss/3.5-notification-system).
+
+## HTML Content Filtering Rules
+
+WeRSS supports custom HTML content filtering rules to automatically clean unwanted elements during article content collection, such as ads, recommendation links, etc.
+
+### Features
+
+- **Global Rules**: Apply to all official accounts when no specific account is selected
+- **MP-Specific Rules**: Configure different filtering rules for specific official accounts
+- **Priority Control**: Set rule priority (higher number = executed first)
+- **Multiple Filtering Methods**:
+  - Remove elements by ID
+  - Remove elements by CSS Class
+  - Remove elements by CSS Selector
+  - Filter elements by attribute
+  - Remove content by regular expression
+  - Remove common HTML elements (script, style, comments, etc.)
+
+### Usage
+
+1. Login to the admin interface, go to "Filter Rules" page
+2. Click "Add Filter Rule"
+3. Configure the rule:
+   - **Select Official Account**: Optional, leave empty for global rules
+   - **Rule Name**: A descriptive name for the rule
+   - **Priority**: Higher number means higher priority (0-100)
+   - **Filter Configuration**:
+     - Remove ID elements: One ID per line, e.g., `ad-banner`
+     - Remove Class elements: One class per line, e.g., `ad-container`
+     - CSS Selectors: e.g., `div.ad-wrapper`, `.recommend-list > li`
+     - Attribute filtering: e.g., `data-type="ad"`
+     - Regular expressions: For precise content matching and removal
+
+### API Endpoints
+
+```bash
+# Get filter rules list
+GET /api/filter-rules
+
+# Create filter rule
+POST /api/filter-rules
+{
+  "mp_id": "[]",  // Empty array for global rules
+  "rule_name": "Global Ad Filter",
+  "remove_ids": ["ad-banner"],
+  "remove_classes": ["ad-container"],
+  "priority": 10
+}
+
+# Update filter rule
+PUT /api/filter-rules/{rule_id}
+
+# Delete filter rule
+DELETE /api/filter-rules/{rule_id}
+```
 
 ## Installation Guide
 
@@ -158,7 +220,7 @@ The following are the environment variable configurations supported in `config.y
 | `APP_NAME` | `we-mp-rss` | Application name |
 | `SERVER_NAME` | `we-mp-rss` | Server name |
 | `WEB_NAME` | `WeRSS微信公众号订阅助手` | Frontend display name |
-| `SEND_CODE` | `True` | Whether to send authorization QR code notifications |
+| `SEND_CODE` | `False` | Whether to send authorization QR code in expired notification (text-only notification by default) |
 | `CODE_TITLE` | `WeRSS授权二维码` | QR code notification title |
 | `ENABLE_JOB` | `True` | Whether to enable scheduled tasks |
 | `AUTO_RELOAD` | `False` | Auto-restart service on code changes |

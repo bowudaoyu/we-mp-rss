@@ -1,433 +1,426 @@
-from asyncio import futures
+"""
+Async Playwright Controller - 完全异步版本
+彻底解决 asyncio 兼容性问题
+"""
 import os
-import platform
-import subprocess
 import sys
 import json
-import random
-import uuid
 import asyncio
-import threading
-from socket import timeout
+import time
 from urllib.parse import urlparse, unquote
+from datetime import datetime
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
-from core.print import print_error
+# Windows 需要使用 ProactorEventLoop 以支持 Playwright 子进程
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-# 设置环境变量
-browsers_name = os.getenv("BROWSER_TYPE", "firefox")
-browsers_path = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "")
-os.environ['PLAYWRIGHT_BROWSERS_PATH'] = browsers_path
+from core.print import print_error, print_info, print_warning
+from driver.anti_crawler_config import AntiCrawlerConfig
 
-# 导入Playwright相关模块
-from playwright.sync_api import sync_playwright
-from playwright.async_api import async_playwright
+@dataclass
+class Metrics:
+    """性能指标数据类"""
+    browser_startup_time: float = 0.0
+    page_creation_time: float = 0.0
+    memory_usage_mb: float = 0.0
+    open_pages: int = 0
+    open_contexts: int = 0
+    total_operations: int = 0
+    failed_operations: int = 0
+    avg_operation_time: float = 0.0
+    cleanup_count: int = 0
+    cleanup_failures: int = 0
+    avg_cleanup_time: float = 0.0
+    created_at: datetime = field(default_factory=datetime.now)
+    last_updated_at: datetime = field(default_factory=datetime.now)
+
 
 class PlaywrightController:
-    # 使用线程本地存储，每个线程拥有独立的 playwright 实例
-    # 解决 greenlet "Cannot switch to a different thread" 错误
-    _thread_local = threading.local()
-    _global_lock = threading.Lock()
-    
-    # 每个线程的引用计数，用于正确清理资源
-    _thread_ref_counts = {}
+    """
+    异步 Playwright 控制器
 
-    def __init__(self):
-        self.system = platform.system().lower()
-        self.driver = None  # 指向线程本地的 playwright driver
-        self.browser = None
-        self.context = None
-        self.page = None
-        self.isClose = True
+    完全基于 async/await,与 FastAPI 完美兼容
 
-    def _mask_proxy_url(self, proxy_url: str) -> str:
-        if not proxy_url:
-            return ""
-        parsed = urlparse(proxy_url)
-        if parsed.username or parsed.password:
-            netloc = parsed.hostname or ""
-            if parsed.port:
-                netloc = f"{netloc}:{parsed.port}"
-            return f"{parsed.scheme}://***:***@{netloc}"
-        return proxy_url
+    Features:
+        - 集成反爬虫配置（user_agent、viewport、extra_http_headers等）
+        - 自动注入JavaScript反检测脚本
+        - 支持移动端/桌面端模式切换
+    """
 
-    def _build_proxy_options(self, proxy_url: str):
-        if not proxy_url:
-            return None
+    def __init__(self, headless: bool = None,
+                 browser_type: str = "webkit",
+                 proxy_url: Optional[str] = "",
+                 user_agent: Optional[str] = None,
+                 debug: bool = False,
+                 mobile_mode: bool = False):
+        """
+        初始化异步控制器
 
-        parsed = urlparse(proxy_url)
-        if not parsed.scheme or not parsed.hostname:
-            raise ValueError(f"代理地址格式无效: {proxy_url}")
+        Args:
+            headless: 是否无头模式（默认从环境变量HEADLESS读取，默认True）
+            browser_type: 浏览器类型
+            proxy_url: 代理URL
+            user_agent: 用户代理（可选，优先使用用户指定值）
+            debug: 调试模式
+            mobile_mode: 是否为移动端模式
+        """
+        # 默认使用 headless=True（适合Docker环境），可通过环境变量覆盖
+        self.headless = os.environ.get("HEADLESS", "true").lower() == "true" if headless is None else headless
+        self.browser_type = browser_type
+        self.proxy_url = proxy_url
+        self.debug = debug
+        self.mobile_mode = mobile_mode
 
-        server = f"{parsed.scheme}://{parsed.hostname}"
-        if parsed.port:
-            server = f"{server}:{parsed.port}"
+        # 反爬虫配置实例
+        self.anti_crawler_config = AntiCrawlerConfig()
 
-        proxy_options = {"server": server}
-        if parsed.username:
-            proxy_options["username"] = unquote(parsed.username)
-        if parsed.password:
-            proxy_options["password"] = unquote(parsed.password)
-        return proxy_options
-
-    def _is_browser_installed(self, browser_name):
-        """检查指定浏览器是否已安装"""
-        try:
-            
-            # 遍历目录，查找包含浏览器名称的目录
-            for item in os.listdir(browsers_path):
-                item_path = os.path.join(browsers_path, item)
-                if os.path.isdir(item_path) and browser_name.lower() in item.lower():
-                    return True
-            
-            return False
-        except (OSError, PermissionError):
-            return False
-    def is_async(self):
-        try:
-            # 尝试获取事件循环
-                # 设置合适的事件循环策略
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return True
-        except RuntimeError:
-            # 如果没有正在运行的事件循环，则说明不是异步环境
-            return False
-    
-    def is_browser_started(self):
-        """检测浏览器是否已启动"""
-        return (not self.isClose and 
-                self.driver is not None and 
-                self.browser is not None and 
-                self.context is not None and 
-                self.page is not None)
-    def start_browser(self, headless=True, mobile_mode=False, dis_image=True, browser_name=browsers_name, language="zh-CN", anti_crawler=True, proxy_url=""):
-        try:
-            if  str(os.getenv("NOT_HEADLESS",False))=="True":
-                headless = False
-            else:
-                headless = True
-
-            if self.system != "windows":
-                headless = True
-            
-            # 使用线程本地存储，确保每个线程有独立的 playwright driver
-            thread_id = threading.current_thread().ident
-            
-            with PlaywrightController._global_lock:
-                # 检查当前线程是否已有 driver
-                if not hasattr(PlaywrightController._thread_local, 'driver') or \
-                   PlaywrightController._thread_local.driver is None:
-                    if sys.platform == "win32":
-                        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-                    PlaywrightController._thread_local.driver = sync_playwright().start()
-                    PlaywrightController._thread_ref_counts[thread_id] = 0
-                    print(f"Playwright driver 已为线程 {thread_id} 初始化")
-                
-                PlaywrightController._thread_ref_counts[thread_id] = \
-                    PlaywrightController._thread_ref_counts.get(thread_id, 0) + 1
-            
-            self.driver = PlaywrightController._thread_local.driver
-        
-            # 根据浏览器名称选择浏览器类型
-            if browser_name.lower() == "firefox":
-                browser_type = self.driver.firefox
-            elif browser_name.lower() == "webkit":
-                browser_type = self.driver.webkit
-            else:
-                browser_type = self.driver.chromium  # 默认使用chromium
-            print(f"启动浏览器: {browser_name}, 无头模式: {headless}, 移动模式: {mobile_mode}, 反爬虫: {anti_crawler}")
-            # 设置启动选项
-            launch_options = {
-                "headless": headless
-            }
-
-            proxy_options = self._build_proxy_options(proxy_url)
-            if proxy_options:
-                print(f"浏览器代理已启用: {self._mask_proxy_url(proxy_url)}")
-                launch_options["proxy"] = proxy_options
-            
-            # 在Windows上添加额外的启动选项
-            if self.system == "windows":
-                launch_options["handle_sigint"] = False
-                launch_options["handle_sigterm"] = False
-                launch_options["handle_sighup"] = False
-            
-            self.browser = browser_type.launch(**launch_options)
-            
-            # 设置浏览器语言为中文
-            context_options = {
-                "locale": language
-            }
-            
-            # 反爬虫配置
-            if anti_crawler:
-                context_options.update(self._get_anti_crawler_config(mobile_mode))
-            
-            self.context = self.browser.new_context(**context_options)
-            self.page = self.context.new_page()
-            
-            if mobile_mode:
-                self.page.set_viewport_size({"width": 375, "height": 812})
-            # else:
-            #     self.page.set_viewport_size({"width": 1920, "height": 1080})
-
-            if dis_image:
-                self.context.route("**/*.{png,jpg,jpeg}", lambda route: route.abort())
-
-            # 应用反爬虫脚本
-            if anti_crawler:
-                self._apply_anti_crawler_scripts()
-
-            self.isClose = False
-            return self.page
-        except Exception as e:
-            tips=f"{str(e)}\nDocker环境;您可以设置环境变量INSTALL=True并重启Docker自动安装浏览器环境;如需要切换浏览器可以设置环境变量BROWSER_TYPE=firefox 支持(firefox,webkit,chromium),开发环境请手工安装"
-            print_error(tips)
-            self.cleanup()
-            raise Exception(tips)
-        
-    def string_to_json(self, json_string):
-        try:
-            json_obj = json.loads(json_string)
-            return json_obj
-        except json.JSONDecodeError as e:
-            print(f"JSON解析错误: {e}")
-            return ""
-
-    def parse_string_to_dict(self, kv_str: str):
-        result = {}
-        items = kv_str.strip().split(';')
-        for item in items:
-            try:
-                key, value = item.strip().split('=')
-                result[key.strip()] = value.strip()
-            except Exception as e:
-                pass
-        return result
-
-    def add_cookies(self, cookies):
-        if self.context is None:
-            raise Exception("浏览器未启动，请先调用 start_browser()")
-        self.context.add_cookies(cookies)
-    def get_cookies(self):
-        if self.context is None:
-            raise Exception("浏览器未启动，请先调用 start_browser()")
-        return self.context.cookies()
-    def add_cookie(self, cookie):
-        self.add_cookies([cookie])
-
-
-    def _get_anti_crawler_config(self, mobile_mode=False):
-        """获取反爬虫配置"""
-        
-        # 生成随机指纹
-        fingerprint = self._generate_uuid()
-        
-        # 基础配置
-        config = {
-            "user_agent": self._get_realistic_user_agent(mobile_mode),
-            "viewport": {
-                "width": random.randint(1200, 1920) if not mobile_mode else 375,
-                "height": random.randint(800, 1080) if not mobile_mode else 812,
-                "device_scale_factor": random.choice([1, 1.25, 1.5, 2])
-            },
-            "extra_http_headers": {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Cache-Control": "no-cache",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1"
-            }
-        }
-        
-        # 移动端特殊配置
-        if mobile_mode:
-            config["extra_http_headers"].update({
-                "User-Agent": config["user_agent"],
-                "X-Requested-With": "com.tencent.mm"
-            })
-        
-        return config
-
-    def _get_realistic_user_agent(self, mobile_mode=False):
-        """获取更真实的User-Agent"""
-        print(f"浏览器特征设置完成: {'移动端' if mobile_mode else '桌面端'}")
-        if mobile_mode:
-            # 移动端User-Agent
-            mobile_agents = [
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-                "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
-                "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
-                "Mozilla/5.0 (Windows Phone 10.0; Android 6.0.1; Microsoft; Lumia 950) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Mobile Safari/537.36 Edge/14.14393"
-            ]
-            return random.choice(mobile_agents)
+        # User-Agent处理：
+        # - 如果用户指定了user_agent，优先使用用户指定的
+        # - 否则从AntiCrawlerConfig获取
+        if user_agent:
+            self.user_agent = user_agent
         else:
-            # 桌面端User-Agent（更新版本）
-            desktop_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/106.0.0.0",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ]
-            return random.choice(desktop_agents)
+            self.user_agent = self.anti_crawler_config._ua_generator.get_realistic_user_agent(mobile_mode)
 
-    def _generate_uuid(self):
-        """生成UUID指纹"""
-        return str(uuid.uuid4()).replace("-", "")
+        # Playwright 对象
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
 
-    def _apply_anti_crawler_scripts(self):
-        # try:
-        #     from playwright_stealth.stealth import Stealth
-        #     stealth = Stealth()
-        #     stealth.apply_stealth_sync(self.page)
-        # except ImportError:
-        #     print("检测到playwright_stealth未安装，正在自动安装...")
-        #     subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright_stealth"])
-        #     from playwright_stealth.stealth import Stealth
-        #     stealth = Stealth()
-        #     stealth.apply_stealth_sync(self.page)
+        # 性能指标
+        self.metrics = Metrics()
         
-        """应用反爬虫脚本"""
-        # 隐藏自动化特征
-        self.page.add_init_script("""
-        // 隐藏webdriver属性
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => false,
-        });
-        
-        // 隐藏chrome属性
-        Object.defineProperty(window, 'chrome', {
-            get: () => false,
-        });
-        
-        // 修改plugins长度
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5],
-        });
-        
-        // 修改languages
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['zh-CN', 'zh', 'en'],
-        });
-        
-        // 隐藏自动化痕迹
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => false,
-        });
-        
-        // 修改permissions
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
-        """)
-      
-        # 设置更真实的浏览器行为
-        self.page.evaluate("""
-        // 随机延迟点击事件
-        const originalAddEventListener = EventTarget.prototype.addEventListener;
-        EventTarget.prototype.addEventListener = function(type, listener, options) {
-            if (type === 'click') {
-                const wrappedListener = function(...args) {
-                    setTimeout(() => listener.apply(this, args), Math.random() * 100 + 50);
-                };
-                return originalAddEventListener.call(this, type, wrappedListener, options);
-            }
-            return originalAddEventListener.call(this, type, listener, options);
-        };
-        
-        // 随机化鼠标移动
-        document.addEventListener('mousemove', (e) => {
-            if (Math.random() > 0.7) {
-                e.stopImmediatePropagation();
-            }
-        }, true);
-        """)
+    async def start_browser(self) -> None:
+        """
+        启动浏览器(异步) - 集成反爬虫配置
+        """
+        if self._browser is not None:
+            return
 
-       
+        start_time = time.time()
 
-   
-
-    def __del__(self):
-        # 析构时确保资源被释放
         try:
-            self.Close()
-        except Exception:
-            # 析构函数中避免抛出异常
-            pass
-
-    def open_url(self, url,wait_until="domcontentloaded"):
-        try:
-            self.page.goto(url,wait_until=wait_until)
-        except Exception as e:
-            raise Exception(f"打开URL失败: {str(e)}")
-
-    def Close(self):
-        self.cleanup()
-
-    def cleanup(self):
-        """清理所有资源 - 每个步骤独立捕获异常"""
-        errors = []
-        # 先清理实例级别的资源
-        for name, obj in [('page', self.page), ('context', self.context), 
-                           ('browser', self.browser)]:
-            if obj:
+            # Windows 上检查事件循环类型
+            if sys.platform == 'win32':
                 try:
-                    obj.close()
-                except Exception as e:
-                    errors.append(f"{name}: {e}")
-        
-        self.page = None
-        self.context = None
-        self.browser = None
-        self.isClose = True
-        
-        # 使用全局锁管理线程本地 driver 的生命周期
-        thread_id = threading.current_thread().ident
-        
-        with PlaywrightController._global_lock:
-            if thread_id in PlaywrightController._thread_ref_counts:
-                PlaywrightController._thread_ref_counts[thread_id] -= 1
-                
-                # 只有当该线程的引用计数归零时才真正停止 driver
-                if PlaywrightController._thread_ref_counts[thread_id] == 0:
-                    if hasattr(PlaywrightController._thread_local, 'driver') and \
-                       PlaywrightController._thread_local.driver is not None:
-                        try:
-                            PlaywrightController._thread_local.driver.stop()
-                            print(f"Playwright driver 已为线程 {thread_id} 停止")
-                        except Exception as e:
-                            errors.append(f"driver: {e}")
-                        finally:
-                            PlaywrightController._thread_local.driver = None
-                    del PlaywrightController._thread_ref_counts[thread_id]
-        
-        self.driver = None
-        if errors:
-            print(f"资源清理部分失败: {errors}")
+                    loop = asyncio.get_running_loop()
+                    loop_type = type(loop).__name__
+                    if self.debug:
+                        print_info(f"当前事件循环类型: {loop_type}")
+                except RuntimeError:
+                    pass
 
-    def dict_to_json(self, data_dict):
+            # 导入 async_playwright
+            from playwright.async_api import async_playwright
+
+            # 启动 Playwright
+            self._playwright = await async_playwright().start()
+
+            # 选择浏览器类型
+            browser_launcher = getattr(self._playwright, self.browser_type)
+
+            # 启动浏览器
+            # 注意：不同浏览器支持的参数不同
+            # - Chromium: 支持 --disable-blink-features, --disable-dev-shm-usage
+            # - Firefox: 不支持这些参数
+            # - WebKit: 不支持这些参数
+            launch_options = {
+                "headless": self.headless,
+            }
+
+            # 只为 Chromium 添加特定参数
+            if self.browser_type == "chromium":
+                launch_options["args"] = [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ]
+
+            # 添加代理
+            if self.proxy_url:
+                launch_options["proxy"] = {"server": self.proxy_url}
+
+            self._browser = await browser_launcher.launch(**launch_options)
+
+            # ========== 核心改造：使用AntiCrawlerConfig ==========
+            # 获取反爬虫配置
+            anti_config = self.anti_crawler_config.get_anti_crawler_config(self.mobile_mode)
+
+            # 构建上下文配置
+            context_options = {
+                "user_agent": self.user_agent,  # 使用初始化时确定的UA
+                "viewport": anti_config.get("viewport", {"width": 1920, "height": 1080}),
+                "locale": "zh-CN",
+                "timezone_id": "Asia/Shanghai",
+            }
+
+            # 应用额外的HTTP头
+            if "extra_http_headers" in anti_config:
+                context_options["extra_http_headers"] = anti_config["extra_http_headers"]
+
+            # 应用其他可选配置
+            for key in ["java_script_enabled", "ignore_https_errors", "bypass_csp"]:
+                if key in anti_config:
+                    context_options[key] = anti_config[key]
+
+            self._context = await self._browser.new_context(**context_options)
+
+            # 创建页面
+            self._page = await self._context.new_page()
+
+            # ========== 核心改造：注入反检测脚本 ==========
+            await self._apply_anti_crawler_scripts(self._page)
+
+            # 记录启动时间
+            self.metrics.browser_startup_time = time.time() - start_time
+
+            if self.debug:
+                print_info(f"浏览器启动成功,耗时: {self.metrics.browser_startup_time:.2f}s")
+                print_info(f"反爬虫配置已应用: mobile_mode={self.mobile_mode}")
+
+        except Exception as e:
+            print_error(f"启动浏览器失败: {str(e)}")
+            raise
+
+    async def _apply_anti_crawler_scripts(self, page) -> None:
+        """
+        应用反爬虫脚本到页面
+
+        Args:
+            page: Playwright页面对象
+        """
         try:
-            return json.dumps(data_dict, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError) as e:
-            print(f"字典转JSON失败: {e}")
-            return ""
+            # 获取初始化脚本
+            init_script = AntiCrawlerConfig.get_init_script()
 
-# 示例用法
-if __name__ == "__main__":
-    controller = PlaywrightController()
-    try:
-        controller.start_browser()
-        controller.open_url("https://mp.weixin.qq.com/")
-    finally:
-        # controller.Close()
-        pass
+            # 注入初始化脚本（在页面加载前执行）
+            await page.add_init_script(init_script)
+
+            if self.debug:
+                print_info("反检测脚本注入成功")
+
+        except Exception as e:
+            # 注入失败不中断流程，仅记录警告
+            print_warning(f"反检测脚本注入失败: {str(e)}")
+            
+    async def open_url(self, url: str,
+                       wait_until: str = "domcontentloaded",
+                       timeout: int = 30000) -> bool:
+        """
+        打开URL(异步)
+
+        Args:
+            url: 目标URL
+            wait_until: 等待策略
+            timeout: 超时时间(毫秒)
+
+        Returns:
+            是否成功
+        """
+        # 检查 Page 对象是否有效，如果无效则重新启动浏览器
+        if not self.is_page_valid():
+            if self.debug:
+                print_warning("Page 对象无效，重新启动浏览器...")
+            await self.start_browser()
+
+        start_time = time.time()
+
+        try:
+            # 导航到URL
+            await self._page.goto(url, wait_until=wait_until, timeout=timeout)
+
+            # 智能等待
+            await self._smart_wait()
+
+            # 记录指标
+            load_time = time.time() - start_time
+            self.metrics.total_operations += 1
+            self.metrics.avg_operation_time = (
+                (self.metrics.avg_operation_time * (self.metrics.total_operations - 1) + load_time)
+                / self.metrics.total_operations
+            )
+
+            if self.debug:
+                print_info(f"页面加载成功: {url}, 耗时: {load_time:.2f}s")
+
+            return True
+
+        except Exception as e:
+            self.metrics.failed_operations += 1
+            print_error(f"打开URL失败: {url}, 错误: {str(e)}")
+            # 如果打开URL失败，尝试清理并重新初始化
+            try:
+                await self.close()
+            except Exception:
+                pass
+            return False
+            
+    async def _smart_wait(self) -> None:
+        """
+        智能等待页面加载(异步)
+        """
+        try:
+            # 等待网络空闲
+            await self._page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            # 如果网络空闲超时,继续执行
+            pass
+            
+        # 等待一小段时间确保页面稳定
+        await asyncio.sleep(0.5)
+        
+    async def get_content(self) -> str:
+        """
+        获取页面内容(异步)
+        """
+        if self._page is None:
+            raise RuntimeError("页面未初始化")
+            
+        return await self._page.content()
+        
+    async def get_title(self) -> str:
+        """
+        获取页面标题(异步)
+        """
+        if self._page is None:
+            raise RuntimeError("页面未初始化")
+            
+        return await self._page.title()
+        
+    async def evaluate(self, script: str) -> any:
+        """
+        执行JavaScript(异步)
+        """
+        if self._page is None:
+            raise RuntimeError("页面未初始化")
+            
+        return await self._page.evaluate(script)
+        
+    async def screenshot(self, path: str) -> None:
+        """
+        截图(异步)
+        """
+        if self._page is None:
+            raise RuntimeError("页面未初始化")
+            
+        await self._page.screenshot(path=path)
+        
+    async def export_to_pdf(self, path: str) -> None:
+        """
+        导出PDF(异步)
+        """
+        if self._page is None:
+            raise RuntimeError("页面未初始化")
+            
+        await self._page.pdf(path=path)
+        
+    async def close(self) -> None:
+        """
+        关闭浏览器(异步)
+        """
+        start_time = time.time()
+        
+        try:
+            if self._page:
+                await self._page.close()
+                self._page = None
+                
+            if self._context:
+                await self._context.close()
+                self._context = None
+                
+            if self._browser:
+                await self._browser.close()
+                self._browser = None
+                
+            if self._playwright:
+                await self._playwright.stop()
+                self._playwright = None
+                
+            # 记录清理时间
+            cleanup_time = time.time() - start_time
+            self.metrics.cleanup_count += 1
+            self.metrics.avg_cleanup_time = (
+                (self.metrics.avg_cleanup_time * (self.metrics.cleanup_count - 1) + cleanup_time)
+                / self.metrics.cleanup_count
+            )
+            
+            if self.debug:
+                print_info(f"浏览器关闭成功,耗时: {cleanup_time:.2f}s")
+                
+        except Exception as e:
+            self.metrics.cleanup_failures += 1
+            print_error(f"关闭浏览器失败: {str(e)}")
+            
+    async def __aenter__(self):
+        """异步上下文管理器入口"""
+        await self.start_browser()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """异步上下文管理器出口"""
+        await self.close()
+        
+    @property
+    def page(self):
+        """获取页面对象"""
+        return self._page
+        
+    @property
+    def context(self):
+        """获取上下文对象"""
+        return self._context
+        
+    @property
+    def browser(self):
+        """获取浏览器对象"""
+        return self._browser
+
+    # ========== 辅助方法 ==========
+
+    def is_browser_started(self) -> bool:
+        """检查浏览器是否已启动"""
+        return self._browser is not None and self._page is not None
+
+    def is_page_valid(self) -> bool:
+        """
+        检查 Page 对象是否有效
+        通过尝试访问 Page 的内部连接来判断对象是否仍然可用
+        """
+        if self._page is None:
+            return False
+        try:
+            # 尝试访问 Page 对象的内部属性，如果对象已失效会抛出异常
+            # 这是一个轻量级的检查，不会实际执行任何浏览器操作
+            return hasattr(self._page, '_impl_obj') and self._page._impl_obj is not None
+        except Exception:
+            return False
+
+    async def get_cookies(self) -> List[Dict]:
+        """获取所有 cookies（异步）"""
+        if self._context is None:
+            raise RuntimeError("浏览器上下文未初始化")
+        return await self._context.cookies()
+
+    async def add_cookies(self, cookies: List[Dict]) -> None:
+        """添加多个 cookies（异步）"""
+        if self._context is None:
+            raise RuntimeError("浏览器上下文未初始化")
+        await self._context.add_cookies(cookies)
+
+    async def add_cookie(self, cookie: Dict) -> None:
+        """添加单个 cookie（异步）"""
+        if self._context is None:
+            raise RuntimeError("浏览器上下文未初始化")
+        await self._context.add_cookies([cookie])
+
+    async def cleanup(self) -> None:
+        """清理资源（异步）"""
+        await self.close()
+
+    async def Close(self) -> None:
+        """关闭浏览器（异步，兼容旧代码）"""
+        await self.close()

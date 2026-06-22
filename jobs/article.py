@@ -6,7 +6,7 @@ from core.models.article import Article
 
 DB=db.Db(tag="文章采集API")
 
-def UpdateArticle(art:dict,check_exist=False):
+def UpdateArticle(art:dict,check_exist=True):
     mps_count=0
     if DEBUG:
         # DB.delete_article(art)

@@ -1,4 +1,5 @@
 """Redis客户端工具类"""
+import json
 import redis
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -205,6 +206,220 @@ class RedisClient:
         except Exception as e:
             print_error(f"获取环境异常统计失败: {e}")
             return default_stats
+    
+    def clear_env_exception(self, mp_id: str = "", url: str = "") -> bool:
+        """清除环境异常记录
+        
+        当公众号采集成功后，清除该公众号相关的异常记录
+        
+        Args:
+            mp_id: 公众号ID，清除该公众号的所有异常记录
+            url: 文章URL，清除该URL的异常记录
+            
+        Returns:
+            是否清除成功
+        """
+        if not self.is_connected:
+            if not self.reconnect():
+                return False
+        
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            # 使用Redis事务确保原子性
+            pipe = self._client.pipeline()
+            
+            # 清除公众号维度的异常统计
+            if mp_id:
+                mp_key = f"werss:env_exception:mp:{today}"
+                # 获取该公众号的异常次数
+                count = self._client.hget(mp_key, mp_id)
+                if count:
+                    count = int(count)
+                    # 减少总计数
+                    total_key = f"werss:env_exception:total:{today}"
+                    pipe.decrby(total_key, count)
+                    # 删除该公众号的统计
+                    pipe.hdel(mp_key, mp_id)
+                    print_info(f"已清除公众号 {mp_id} 的 {count} 条异常记录")
+            
+            # 清除URL维度的异常记录
+            if url:
+                url_key = f"werss:env_exception:url:{today}"
+                if self._client.hexists(url_key, url):
+                    pipe.hdel(url_key, url)
+                    # 减少总计数
+                    total_key = f"werss:env_exception:total:{today}"
+                    pipe.decr(total_key)
+                    print_info(f"已清除URL {url} 的异常记录")
+            
+            # 执行事务
+            if pipe.command_stack:
+                pipe.execute()
+            
+            return True
+            
+        except redis.exceptions.ConnectionError as e:
+            print_error(f"Redis连接断开，清除失败: {e}")
+            self._client = None
+            return False
+        except Exception as e:
+            print_error(f"清除环境异常记录失败: {e}")
+            return False
+
+
+class RedisCache:
+    """Redis 缓存工具类
+    
+    提供通用的键值缓存功能，支持 JSON 序列化
+    """
+    
+    def __init__(self, key_prefix: str = "werss:cache"):
+        """初始化缓存
+        
+        Args:
+            key_prefix: 键前缀，用于区分不同模块的缓存
+        """
+        self.key_prefix = key_prefix
+        self._client = None
+    
+    def _get_client(self):
+        """获取 Redis 客户端"""
+        if self._client is not None:
+            return self._client
+        
+        # 复用全局 RedisClient 的连接
+        if redis_client.is_connected:
+            self._client = redis_client._client
+            return self._client
+        
+        # 尝试重新连接
+        if redis_client.reconnect():
+            self._client = redis_client._client
+            return self._client
+        
+        return None
+    
+    def get(self, key: str) -> Optional[Any]:
+        """获取缓存值
+        
+        Args:
+            key: 缓存键（不含前缀）
+            
+        Returns:
+            缓存值，不存在或出错返回 None
+        """
+        client = self._get_client()
+        if not client:
+            return None
+        
+        try:
+            full_key = f"{self.key_prefix}:{key}"
+            data = client.get(full_key)
+            if data:
+                return json.loads(data)
+            return None
+        except Exception as e:
+            print_error(f"Redis 缓存读取失败 [{key}]: {e}")
+            return None
+    
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+        """设置缓存值
+        
+        Args:
+            key: 缓存键（不含前缀）
+            value: 缓存值（会被 JSON 序列化）
+            ttl: 过期时间（秒），None 表示不过期
+            
+        Returns:
+            是否设置成功
+        """
+        client = self._get_client()
+        if not client:
+            return False
+        
+        try:
+            full_key = f"{self.key_prefix}:{key}"
+            data = json.dumps(value, ensure_ascii=False)
+            
+            if ttl:
+                client.setex(full_key, ttl, data)
+            else:
+                client.set(full_key, data)
+            
+            return True
+        except Exception as e:
+            print_error(f"Redis 缓存写入失败 [{key}]: {e}")
+            return False
+    
+    def delete(self, key: str) -> bool:
+        """删除缓存
+        
+        Args:
+            key: 缓存键（不含前缀）
+            
+        Returns:
+            是否删除成功
+        """
+        client = self._get_client()
+        if not client:
+            return False
+        
+        try:
+            full_key = f"{self.key_prefix}:{key}"
+            client.delete(full_key)
+            return True
+        except Exception as e:
+            print_error(f"Redis 缓存删除失败 [{key}]: {e}")
+            return False
+    
+    def exists(self, key: str) -> bool:
+        """检查缓存是否存在
+        
+        Args:
+            key: 缓存键（不含前缀）
+            
+        Returns:
+            是否存在
+        """
+        client = self._get_client()
+        if not client:
+            return False
+        
+        try:
+            full_key = f"{self.key_prefix}:{key}"
+            return client.exists(full_key) > 0
+        except Exception as e:
+            print_error(f"Redis 缓存检查失败 [{key}]: {e}")
+            return False
+    
+    def get_or_set(self, key: str, getter: callable, ttl: Optional[int] = None) -> Any:
+        """获取缓存，不存在则调用 getter 函数获取并缓存
+        
+        Args:
+            key: 缓存键
+            getter: 获取数据的函数
+            ttl: 过期时间（秒）
+            
+        Returns:
+            缓存值或 getter 返回值
+        """
+        # 先尝试从缓存获取
+        value = self.get(key)
+        if value is not None:
+            return value
+        
+        # 调用 getter 获取数据
+        value = getter()
+        if value is not None:
+            self.set(key, value, ttl)
+        
+        return value
+    
+    @property
+    def is_available(self) -> bool:
+        """检查 Redis 是否可用"""
+        return self._get_client() is not None
 
 
 # 全局单例实例
@@ -235,3 +450,18 @@ def get_env_exception_stats(date: Optional[str] = None) -> Dict[str, Any]:
         统计信息字典
     """
     return redis_client.get_env_exception_stats(date)
+
+
+def clear_env_exception(mp_id: str = "", url: str = "") -> bool:
+    """清除环境异常记录（便捷函数）
+    
+    当公众号采集成功后，清除该公众号相关的异常记录
+    
+    Args:
+        mp_id: 公众号ID，清除该公众号的所有异常记录
+        url: 文章URL，清除该URL的异常记录
+        
+    Returns:
+        是否清除成功
+    """
+    return redis_client.clear_env_exception(mp_id, url)

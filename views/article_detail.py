@@ -15,13 +15,23 @@ from core.lax.template_parser import TemplateParser
 from views.config import base
 from driver.wxarticle import Web
 from core.cache import cache_view, clear_cache_pattern, data_cache
+from sqlalchemy.orm import defer
 # 创建路由器
 router = APIRouter(tags=["文章详情"])
+@router.get("/print/{article_id}", response_class=HTMLResponse, summary="文章打印页")
+@cache_view("article_print", ttl=1)  
+async def print_article(
+    request: Request,
+    article_id: str,
+):
+    return await article_detail_view(request, article_id, isprint=True)
+
 @router.get("/article/{article_id}", response_class=HTMLResponse, summary="文章详情页")
-@cache_view("article_detail", ttl=3600)  # 缓存1小时
+@cache_view("article_detail", ttl=1)  # 缓存1小时
 async def article_detail_view(
     request: Request,
-    article_id: str
+    article_id: str,
+    isprint:bool=False
 ):
     """
     文章详情页面
@@ -33,6 +43,7 @@ async def article_detail_view(
             Feed, Article.mp_id == Feed.id
         ).filter(Article.id == article_id, Article.status == 1, Feed.status == 1).first()
         
+        
         if not article_query:
             raise HTTPException(status_code=404, detail="文章不存在")
         
@@ -41,25 +52,28 @@ async def article_detail_view(
         article, feed = article_query
         
         # 标记为已读（可选）
-        if not article.is_read:
-            article.is_read = 1
-            session.commit()
+        # if not article.is_read:
+        #     article.is_read = 1
+        #     session.commit()
         
-        # 获取相关文章（同公众号的其他文章）
-        related_articles = session.query(Article).filter(
+        # 获取相关文章（同公众号的其他文章，排除大字段）
+        related_articles = session.query(Article).options(
+            defer(Article.content),      # type: ignore
+            defer(Article.content_html)  # type: ignore
+        ).filter(
             Article.mp_id == article.mp_id,
             Article.id != article_id,
             Article.status == 1
         ).order_by(Article.publish_time.desc()).limit(5).all()
         
-        # 获取上一个和下一个文章ID
-        prev_article = session.query(Article.id,Article.title).filter(
+        # 获取上一个和下一个文章ID（排除大字段）
+        prev_article = session.query(Article.id, Article.title).filter(
             Article.mp_id == article.mp_id,
             Article.publish_time < article.publish_time,
             Article.status == 1
         ).order_by(Article.publish_time.desc()).first()
         
-        next_article = session.query(Article.id,Article.title).filter(
+        next_article = session.query(Article.id, Article.title).filter(
             Article.mp_id == article.mp_id,
             Article.publish_time > article.publish_time,
             Article.status == 1
@@ -77,18 +91,34 @@ async def article_detail_view(
             related_list.append(rel_data)
         
         # 处理文章数据
+        # 处理文章内容中的图片链接
+        raw_content = article.content
+        processed_content = process_content_images(raw_content)
+        
+        # 根据 show_type 获取类型名称
+        show_type_map = {
+            0: "图文",
+            5: "视频",
+            7: "音频",
+            10: "贴图",
+            11: "分享"
+        }
+        show_type_name = show_type_map.get(article.show_type, f"其他({article.show_type})" if article.show_type is not None else "未设置")
+        
         article_data = {
             "id": article.id,
             "title": article.title,
             "description": article.description or Web.get_description(article.content),
-            "pic_url": Web.get_image_url(article.pic_url),
+            "pic_url": article.pic_url,
             "url": article.url,
+            "show_type": article.show_type,
+            "show_type_name": show_type_name,
             "publish_time": datetime.fromtimestamp(article.publish_time).strftime('%Y-%m-%d %H:%M') if article.publish_time else "",
             "created_at": article.created_at.strftime('%Y-%m-%d %H:%M') if article.created_at else "",
-            "content": process_content_images(article.content or ""),
+            "content": processed_content,
             "mp_name": feed.mp_name if feed else "未知公众号",
             "mp_id": article.mp_id,
-            "mp_cover": Web.get_image_url(feed.mp_cover) if feed else "",
+            "mp_cover": feed.mp_cover if feed else "/static/logo.png",
             "mp_intro": feed.mp_intro if feed else "",
         }
         
@@ -99,7 +129,11 @@ async def article_detail_view(
         ]
         
         # 读取模板文件
-        template_path=base.article_detail_template
+        if isprint:
+            template_path = base.article_detail_print_template
+        else:
+            template_path = base.article_detail_template
+        
         with open(template_path, 'r', encoding='utf-8') as f:
             template_content = f.read()
         

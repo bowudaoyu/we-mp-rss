@@ -11,6 +11,21 @@ services:
       - db_data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
 
+  redis:
+    image: docker.1ms.run/redis:7-alpine
+    container_name: we-mp-rss-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   singbox:
     image: ghcr.io/sagernet/sing-box:latest
     container_name: we-mp-rss-singbox
@@ -34,6 +49,7 @@ services:
       - ../.env
     environment:
       DB: mysql+pymysql://rss_user:pass123456@db-mp/we_mp_rss?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
       PROXY_HTTP_URL: http://singbox:7890
     ports:
       - "8001:8001"
@@ -41,7 +57,9 @@ services:
       - ./data:/app/data
     depends_on:
       - mysql
+      - redis
       - singbox
 
 volumes:
   db_data:
+  redis_data:

@@ -161,7 +161,10 @@ class TaskScheduler:
                     trigger=trigger,
                     args=args,
                     kwargs=kwargs,
-                    id=str(job_id)
+                    id=str(job_id),
+                    max_instances=1,          # 同一任务最多1个实例
+                    coalesce=True,            # 错过的任务合并
+                    misfire_grace_time=300    # 5分钟宽限时间
                 )
                 self._jobs[job.id] = job
                 logger.info(f"Successfully added job {tag} {job.id}")
@@ -253,13 +256,23 @@ class TaskScheduler:
         :return: 包含调度器状态的字典
         """
         with self._lock:
+            next_run_times = []
+            # 从调度器获取实时 Job 信息
+            for job in self._scheduler.get_jobs():
+                try:
+                    next_time = getattr(job, 'next_run_time', None)
+                    next_run_times.append((
+                        job.id,
+                        next_time.isoformat() if next_time else None
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to get next_run_time for job {job.id}: {e}")
+                    next_run_times.append((job.id, None))
+            
             return {
                 'running': self._scheduler.running,
                 'job_count': len(self._jobs),
-                'next_run_times': [
-                    (job_id, job.next_run_time.isoformat() if job.next_run_time else None)
-                    for job_id, job in self._jobs.items()
-                ]
+                'next_run_times': next_run_times
             }
 
     def get_job_details(self, job_id: str) -> dict:
@@ -273,14 +286,24 @@ class TaskScheduler:
             if job_id not in self._jobs:
                 raise ValueError(f"Job {job_id} not found")
             
-            job = self._jobs[job_id]
+            # 从调度器获取实时 Job 信息
+            job = self._scheduler.get_job(job_id)
+            if not job:
+                # 如果调度器中没有，返回基本信息
+                return {
+                    'id': job_id,
+                    'name': job_id,
+                    'trigger': '',
+                    'next_run_time': None,
+                    'last_run_time': None,
+                }
+            
             return {
                 'id': job.id,
-                'name': job.name,
-                'trigger': str(job.trigger),
-                'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
-                'last_run_time': job.last_run_time.isoformat() if job.last_run_time else None,
-                'last_run_result': job.last_run_result
+                'name': getattr(job, 'name', job_id),
+                'trigger': str(job.trigger) if hasattr(job, 'trigger') else '',
+                'next_run_time': job.next_run_time.isoformat() if hasattr(job, 'next_run_time') and job.next_run_time else None,
+                'last_run_time': None,  # APScheduler 3.x 不直接存储 last_run_time
             }
 
 if __name__ == "__main__":

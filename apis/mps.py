@@ -59,7 +59,7 @@ def _ensure_featured_feed(session):
     featured_feed = Feed(
         id=FEATURED_MP_ID,
         mp_name=FEATURED_MP_NAME,
-        mp_cover="logo.svg",
+        mp_cover="",
         mp_intro=FEATURED_MP_INTRO,
         status=1,
         sync_time=0,
@@ -72,7 +72,12 @@ def _ensure_featured_feed(session):
     return featured_feed
 
 
-def _run_add_featured_article_task(task_id: str, url: str):
+def _run_add_featured_article_task_wrapper(task_id: str, url: str):
+    """包装器:在线程中运行 async 函数"""
+    import asyncio
+    asyncio.run(_run_add_featured_article_task(task_id, url))
+
+async def _run_add_featured_article_task(task_id: str, url: str):
     session = DB.get_session()
     fetcher = None
     try:
@@ -90,7 +95,7 @@ def _run_add_featured_article_task(task_id: str, url: str):
             raise ValueError("请输入文章链接")
 
         fetcher = WXArticleFetcher()
-        info = fetcher.get_article_content(target_url)
+        info = await fetcher.get_article_content(target_url)
         if not info or info.get("fetch_error"):
             raise ValueError(info.get("fetch_error") or "文章抓取失败，请检查链接或登录状态")
 
@@ -181,7 +186,7 @@ def _run_add_featured_article_task(task_id: str, url: str):
     finally:
         if fetcher is not None:
             try:
-                fetcher.Close()
+                await fetcher.Close()
             except Exception:
                 pass
         session.close()
@@ -221,6 +226,7 @@ async def get_mps(
     limit: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0),
     kw: str = Query(""),
+    status: int = Query(None, description="状态筛选: 1=启用, 0=停用, 不传=全部"),
     current_user: dict = Depends(get_current_user_or_ak)
 ):
     session = DB.get_session()
@@ -229,7 +235,9 @@ async def get_mps(
         query = session.query(Feed).filter(Feed.id != FEATURED_MP_ID)
         if kw:
             query = query.filter(Feed.mp_name.ilike(f"%{kw}%"))
-        total = query.count() + 1
+        if status is not None:
+            query = query.filter(Feed.status == status)
+        total = query.count()
         mps = query.order_by(Feed.created_at.desc()).limit(limit).offset(offset).all()
         mps_list = [{
                 "id": mp.id,
@@ -239,8 +247,6 @@ async def get_mps(
                 "status": mp.status,
                 "created_at": mp.created_at.isoformat()
             } for mp in mps]
-        if offset == 0:
-            mps_list.insert(0, build_featured_mp_item())
         return success_response({
             "list": mps_list,
             "page": {
@@ -293,7 +299,7 @@ async def add_featured_article(
             "message": "任务已创建"
         })
         threading.Thread(
-            target=_run_add_featured_article_task,
+            target=_run_add_featured_article_task_wrapper,
             args=(task_id, target_url),
             daemon=True
         ).start()
@@ -417,7 +423,7 @@ async def get_mp_by_article(
     current_user: dict = Depends(get_current_user_or_ak)
 ):
     try:
-        info =await WXArticleFetcher().async_get_article_content(url)
+        info = await WXArticleFetcher().get_article_content(url)
         
         if not info:
             raise HTTPException(
@@ -490,7 +496,7 @@ async def add_mp(
             from core.queue import TaskQueue
             from core.wx import WxGather
             Max_page=int(cfg.get("max_page","2"))
-            TaskQueue.add_task( WxGather().Model().get_Articles,faker_id=feed.faker_id,Mps_id=feed.id,CallBack=UpdateArticle,MaxPage=Max_page,Mps_title=mp_name)
+            TaskQueue.add_task(WxGather().Model().get_Articles, faker_id=feed.faker_id, Mps_id=feed.id, CallBack=UpdateArticle, MaxPage=Max_page, Mps_title=mp_name, task_name=mp_name)
             
         return success_response({
             "id": feed.id,

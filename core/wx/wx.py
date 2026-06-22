@@ -55,41 +55,12 @@ def search_Biz(kw:str="",limit=5,offset=0):
     return data
 
 from bs4 import BeautifulSoup
-# 提取一篇文章的内容
-def content_extract(url):
-    headers = {
-        "Cookie": cfg.get("cookie"),
-        "User-Agent": cfg.get("user_agent")
-    }
-    r = requests.get(eval(url),headers=headers)
-    if r.status_code == 200:
-        text = r.text
-        soup = BeautifulSoup(text, 'html.parser')
-        # 找到内容
-        js_content_div = soup.find('div', {'id': 'js_content'})
-        # 移除style属性中的visibility: hidden;
-        js_content_div.attrs.pop('style', None)
-        # 找到所有的img标签
-        img_tags = js_content_div.find_all('img')
-        # 遍历每个img标签并修改属性，设置宽度为1080p
-        for img_tag in img_tags:
-            if 'data-src' in img_tag.attrs:
-                img_tag['src'] = img_tag['data-src']
-                del img_tag['data-src']
-            if 'style' in img_tag.attrs:
-                style = img_tag['style']
-                # 使用正则表达式替换width属性
-                style = re.sub(r'width\s*:\s*\d+\s*px', 'width: 1080px', style)
-                img_tag['style'] = style
-        return js_content_div.prettify()
-    else:
-        print("download error,status_code: ",r.status_code,"\n")
-    return ""
 #通过公众号接口获取公众号文章列表
 def get_Articles(faker_id:str):
+    from driver.token import get as get_val
     headers = {
-        "Cookie": wx_cfg.get("cookie"),
-        "User-Agent": wx_cfg.get("user_agent")
+        "Cookie": get_val("cookie"),
+        "User-Agent": get_val("user_agent")
     }
     params = {
         "sub": "list",
@@ -97,15 +68,15 @@ def get_Articles(faker_id:str):
         "begin": 0,
         "count": cfg.get("count"),
         "fakeid": faker_id,
-        "token": wx_cfg.get("token"),
+        "token":get_val("token"),
         "lang": "zh_CN",
         "f": "json",
         "ajax": 1
     }
     url = "https://mp.weixin.qq.com/cgi-bin/appmsgpublish"
     headers = {
-        "Cookie": wx_cfg.get("cookie"),
-        "User-Agent": wx_cfg.get("user_agent")
+        "Cookie":get_val("cookie"),
+        "User-Agent": get_val("user_agent")
     }
     data={}
     try:
@@ -131,7 +102,7 @@ def get_id(url:str)->str:
 
 
 # 从公众号平台获取列表并更新数据库
-def get_list(faker_id:str=None,mp_id:str=None,is_add:bool=False):
+def get_list(faker_id:str='',mp_id:str='',is_add:bool=False):
     articles=[]
     if is_add:
       import time
@@ -141,7 +112,7 @@ def get_list(faker_id:str=None,mp_id:str=None,is_add:bool=False):
           ))
     data=get_Articles(faker_id)
     try:
-        data=data['publish_page']['publish_list']
+        data=data['publish_page']['publish_list'] # type: ignore
         wx_db=db.Db(tag="获取公众号列表")
         wx_db.init(cfg.get('db'))
         for i in data:

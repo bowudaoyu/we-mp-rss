@@ -1000,6 +1000,8 @@ async def get_feed_status(
     feed_id: Optional[str] = Query(None, description="公众号ID，不指定则返回所有"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    sort_by: Optional[str] = Query(None, description="排序字段: mp_name, article_count, update_status, latest_article_time, updated_at"),
+    sort_order: Optional[str] = Query("desc", description="排序方向: asc, desc"),
     current_user: dict = Depends(get_current_user_or_ak)
 ):
     """
@@ -1099,9 +1101,24 @@ async def get_feed_status(
                 "updated_at": feed.updated_at.isoformat() if feed.updated_at else None
             })
         
-        # 按更新状态排序（过期优先显示）
-        status_order = {"outdated": 0, "stale": 1, "unknown": 2, "recent": 3, "fresh": 4}
-        feed_status_list.sort(key=lambda x: status_order.get(x["update_status"], 2))
+        # 排序逻辑
+        if sort_by:
+            # 动态排序
+            reverse = sort_order == "desc"
+            if sort_by == "update_status":
+                status_order = {"outdated": 0, "stale": 1, "unknown": 2, "recent": 3, "fresh": 4}
+                feed_status_list.sort(key=lambda x: status_order.get(x.get("update_status", "unknown"), 2), reverse=reverse)
+            elif sort_by == "latest_article_time":
+                feed_status_list.sort(key=lambda x: x.get("latest_article_time") or "", reverse=reverse)
+            elif sort_by == "article_count":
+                feed_status_list.sort(key=lambda x: x.get("article_count", 0), reverse=reverse)
+            elif sort_by == "mp_name":
+                feed_status_list.sort(key=lambda x: x.get("mp_name", ""), reverse=reverse)
+            elif sort_by == "updated_at":
+                feed_status_list.sort(key=lambda x: x.get("updated_at") or "", reverse=reverse)
+        else:
+            # 默认按更新时间降序
+            feed_status_list.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
         
         return success_response({
             "list": feed_status_list,

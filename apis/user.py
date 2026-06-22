@@ -70,13 +70,24 @@ async def get_user_list(
         # 格式化返回数据
         user_list = []
         for user in users:
+            # 解析权限
+            permissions = []
+            if user.permissions:
+                try:
+                    import json
+                    permissions = json.loads(user.permissions) if isinstance(user.permissions, str) else user.permissions
+                except:
+                    permissions = []
+            
             user_list.append({
+                "id": user.id,
                 "username": user.username,
                 "nickname": user.nickname if user.nickname else user.username,
                 "avatar": user.avatar if user.avatar else "/static/default-avatar.png",
                 "email": user.email if user.email else "",
                 "role": user.role,
                 "is_active": user.is_active,
+                "permissions": permissions,
                 "created_at": user.created_at.strftime("%Y-%m-%d %H:%M:%S") if user.created_at else "",
                 "updated_at": user.updated_at.strftime("%Y-%m-%d %H:%M:%S") if user.updated_at else ""
             })
@@ -117,7 +128,7 @@ async def add_user(
             )
 
         # 验证输入数据
-        required_fields = ["username", "password", "email"]
+        required_fields = ["username", "password"]
         for field in required_fields:
             if field not in user_data:
                 raise HTTPException(
@@ -142,11 +153,16 @@ async def add_user(
             )
 
         # 创建新用户
+        import json
+        import uuid
         new_user = DBUser(
+            id=str(uuid.uuid4()),
             username=user_data["username"],
             password_hash=pwd_context.hash(user_data["password"]),
-            email=user_data["email"],
+            email=user_data.get("email", ""),
+            nickname=user_data.get("nickname", ""),
             role=user_data.get("role", "user"),
+            permissions=json.dumps(user_data.get("permissions", [])) if user_data.get("permissions") else "",
             is_active=user_data.get("is_active", True),
             created_at=datetime.now(),
             updated_at=datetime.now()
@@ -162,6 +178,182 @@ async def add_user(
         raise HTTPException(
             status_code=status.HTTP_406_NOT_ACCEPTABLE,
             detail=f"用户添加失败: {str(e)}"
+        )
+
+@router.put("/{user_id}", summary="更新用户信息")
+async def update_user_by_id(
+    user_id: str,
+    update_data: dict,
+    current_user: dict = Depends(get_current_user_or_ak)
+):
+    """管理员更新指定用户信息"""
+    session = DB.get_session()
+    try:
+        # 验证当前用户是否为管理员
+        if current_user["role"] != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response(
+                    code=40301,
+                    message="无权限执行此操作"
+                )
+            )
+
+        # 获取目标用户
+        user = session.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_response(
+                    code=40401,
+                    message="用户不存在"
+                )
+            )
+
+        # 更新用户信息
+        import json
+        if "nickname" in update_data:
+            user.nickname = update_data["nickname"]
+        if "email" in update_data:
+            user.email = update_data["email"]
+        if "role" in update_data:
+            user.role = update_data["role"]
+        if "permissions" in update_data:
+            user.permissions = json.dumps(update_data["permissions"]) if update_data["permissions"] else ""
+        if "is_active" in update_data:
+            user.is_active = bool(update_data["is_active"])
+
+        user.updated_at = datetime.now()
+        session.commit()
+        return success_response(message="更新成功")
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_406_NOT_ACCEPTABLE,
+            detail=f"更新失败: {str(e)}"
+        )
+
+@router.delete("/{user_id}", summary="删除用户")
+async def delete_user_by_id(
+    user_id: str,
+    current_user: dict = Depends(get_current_user_or_ak)
+):
+    """管理员删除指定用户"""
+    session = DB.get_session()
+    try:
+        # 验证当前用户是否为管理员
+        if current_user["role"] != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response(
+                    code=40301,
+                    message="无权限执行此操作"
+                )
+            )
+
+        # 获取目标用户
+        user = session.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_response(
+                    code=40401,
+                    message="用户不存在"
+                )
+            )
+
+        # 不允许删除自己
+        if user.username == current_user["username"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_response(
+                    code=40001,
+                    message="不能删除自己的账号"
+                )
+            )
+
+        # 删除用户
+        session.delete(user)
+        session.commit()
+        return success_response(message="删除成功")
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_406_NOT_ACCEPTABLE,
+            detail=f"删除失败: {str(e)}"
+        )
+
+@router.post("/{user_id}/reset-password", summary="重置用户密码")
+async def reset_user_password(
+    user_id: str,
+    password_data: dict,
+    current_user: dict = Depends(get_current_user_or_ak)
+):
+    """管理员重置指定用户密码"""
+    session = DB.get_session()
+    try:
+        # 验证当前用户是否为管理员
+        if current_user["role"] != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error_response(
+                    code=40301,
+                    message="无权限执行此操作"
+                )
+            )
+
+        # 获取目标用户
+        user = session.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_response(
+                    code=40401,
+                    message="用户不存在"
+                )
+            )
+
+        # 验证新密码
+        new_password = password_data.get("new_password")
+        if not new_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_response(
+                    code=40001,
+                    message="请提供新密码"
+                )
+            )
+
+        if len(new_password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_response(
+                    code=40004,
+                    message="密码长度不能少于8位"
+                )
+            )
+
+        # 更新密码
+        user.password_hash = pwd_context.hash(new_password)
+        user.updated_at = datetime.now()
+        session.commit()
+        
+        # 清除用户缓存
+        from core.auth import clear_user_cache
+        clear_user_cache(user.username)
+        
+        return success_response(message="密码重置成功")
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_406_NOT_ACCEPTABLE,
+            detail=f"密码重置失败: {str(e)}"
         )
 
 @router.put("", summary="修改用户资料")

@@ -25,12 +25,16 @@ packages=("wget" "git" "build-essential" "zlib1g-dev"
           "libgdbm-dev" "libnss3-dev" "libssl-dev" "libreadline-dev" 
           "libffi-dev" "libsqlite3-dev" "procps" )
 
-
-
-if [ "$EXPORT_PDF" = "True" ]; then
-    echo "添加libreoffice依赖包..."
-    packages+=("fonts-noto-cjk" "libreoffice")
+# X Server 相关依赖（用于非 headless 浏览器）
+if [ "$HEADLESS" != "true" ] || [ "$ENABLE_XVFB" = "true" ]; then
+    echo "添加 Xvfb 和 X11 依赖包..."
+    packages+=("xvfb" "x11-utils" "libgtk-3-0" "libnotify4" "libnss3" "libxss1" "libxtst6" "libasound2" "libgbm1")
 fi
+
+# if [ "$EXPORT_PDF" = "True" ]; then
+#     echo "添加libreoffice依赖包..."
+#     packages+=("fonts-noto-cjk" "libreoffice")
+# fi
 
 echo "检查依赖包安装状态..."
 for package in "${packages[@]}"; do

@@ -28,51 +28,48 @@ const parseCronExpression = (exp: string) => {
   
   const [minute, hour, day, month, week] = parts
   
+  // 解析单个部分的辅助函数
+  const parsePart = (value: string, unit: string) => {
+    if (value === '*') {
+      return `每${unit}`
+    }
+    // 支持 9-23/3 这种格式（范围+步长）
+    if (value.includes('/') && value.includes('-')) {
+      const [range, step] = value.split('/')
+      const [start, end] = range.split('-')
+      return `${start}到${end}${unit}每${step}${unit}`
+    }
+    if (value.includes('/')) {
+      const [_, interval] = value.split('/')
+      return `每${interval}${unit}`
+    }
+    if (value.includes('-')) {
+      const [start, end] = value.split('-')
+      return `${start}到${end}${unit}`
+    }
+    if (value.includes(',')) {
+      return `在${value.split(',').join('、')}${unit}`
+    }
+    return `在${value}${unit}`
+  }
+  
   let result = ''
   
   // 解析分钟
-  if (minute === '*') {
-    result += '每分钟'
-  } else if (minute.includes('/')) {
-    const [_, interval] = minute.split('/')
-    result += `每${interval}分钟`
-  } else {
-    result += `在${minute}分`
-  }
+  result += parsePart(minute, '分钟')
   
   // 解析小时
-  if (hour === '*') {
-    result += '每小时'
-  } else if (hour.includes('/')) {
-    const [_, interval] = hour.split('/')
-    result += `每${interval}小时`
-  } else {
-    result += ` ${hour}时`
-  }
+  result += ' ' + parsePart(hour, '小时')
   
   // 解析日期
-  if (day === '*') {
-    result += ' 每天'
-  } else if (day.includes('/')) {
-    const [_, interval] = day.split('/')
-    result += ` 每${interval}天`
-  } else {
-    result += ` ${day}日`
-  }
+  result += ' ' + parsePart(day, '天')
   
   // 解析月份
-  if (month === '*') {
-    result += ' 每月'
-  } else if (month.includes('/')) {
-    const [_, interval] = month.split('/')
-    result += ` 每${interval}个月`
-  } else {
-    result += ` ${month}月`
-  }
+  result += ' ' + parsePart(month, '月')
   
   // 解析星期
   if (week !== '*') {
-    result += ` 星期${week}`
+    result += ' 星期' + week
   }
   
   return result || exp
@@ -88,7 +85,7 @@ const parseCronExpression = (exp: string) => {
     >
       <template #columns>
         <a-table-column title="名称" data-index="name" ellipsis :width="200"/>
-        <a-table-column title="cron表达式">
+        <a-table-column title="Cron表达式">
           <template #cell="{ record }">
             {{ parseCronExpression(record.cron_exp) }}
           </template>

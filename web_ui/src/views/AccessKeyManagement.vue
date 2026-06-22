@@ -101,11 +101,7 @@ const handleSubmit = async () => {
           ]),
           okText: '我已记下',
           onOk: () => {
-            navigator.clipboard.writeText(`Access Key: ${res.key}\nSecret Key: ${res.secret}`).then(() => {
-              Message.success('已复制到剪贴板')
-            }).catch(() => {
-              Message.error('复制失败')
-            })
+            copyToClipboard(`Access Key: ${res.key}\nSecret Key: ${res.secret}`)
           }
         })
         showSecretKey.value = false
@@ -168,11 +164,39 @@ const handleDelete = (record: AccessKeyResponse) => {
 }
 
 const copyToClipboard = (text: string) => {
-  navigator.clipboard.writeText(text).then(() => {
-    Message.success('已复制到剪贴板')
-  }).catch(() => {
+  // 优先使用现代 Clipboard API
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      Message.success('已复制到剪贴板')
+    }).catch(() => {
+      fallbackCopy(text)
+    })
+  } else {
+    // 降级方案：使用 execCommand
+    fallbackCopy(text)
+  }
+}
+
+const fallbackCopy = (text: string) => {
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    const successful = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    if (successful) {
+      Message.success('已复制到剪贴板')
+    } else {
+      Message.error('复制失败')
+    }
+  } catch {
     Message.error('复制失败')
-  })
+  }
 }
 
 const formatDate = (dateStr: string | undefined) => {

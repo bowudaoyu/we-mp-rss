@@ -11,7 +11,7 @@ class Feed(Base):
     mp_name =Column(String(255))
     mp_cover = Column(String(255))
     mp_intro = Column(String(255))
-    status = Column(Integer)
+    status = Column(Integer,index=True)
     sync_time = Column(Integer)
     update_time = Column(Integer)
     created_at = Column(DateTime) 

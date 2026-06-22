@@ -1,4 +1,19 @@
 services:
+  redis:
+    image: docker.1ms.run/redis:7-alpine
+    container_name: we-mp-rss-redis-dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   backend:
     build:
       context: ..
@@ -10,7 +25,12 @@ services:
       - ../.env
     environment:
       DB: sqlite:///data/we_mp_rss.db
+      REDIS_URL: redis://redis:6379/0
       PROXY_HTTP_URL: http://singbox:7890
+      # X Server 配置（默认启用 Xvfb）
+      ENABLE_XVFB: "true"
+      HEADLESS: "false"
+      DISPLAY: :99
     ports:
       - "8001:8001"
     volumes:
@@ -30,7 +50,10 @@ services:
       - ../job.py:/app/job.py
       - ../data:/app/data
     depends_on:
-      - singbox
+      redis:
+        condition: service_healthy
+      singbox:
+        condition: service_started
 
   singbox:
     image: ghcr.io/sagernet/sing-box:latest
@@ -67,3 +90,4 @@ services:
 
 volumes:
   web_ui_node_modules:
+  redis_data:

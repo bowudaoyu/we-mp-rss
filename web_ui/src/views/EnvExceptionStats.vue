@@ -51,26 +51,6 @@
                 </template>
               </a-statistic>
             </a-col>
-            <a-col :xs="24" :sm="12" :md="6">
-              <a-statistic
-                title="受影响公众号"
-                :value="Object.keys(stats.mp_stats || {}).length"
-              >
-                <template #prefix>
-                  <icon-user />
-                </template>
-              </a-statistic>
-            </a-col>
-            <a-col :xs="24" :sm="12" :md="6">
-              <a-statistic
-                title="统计日期"
-                :value="stats.date"
-              >
-                <template #prefix>
-                  <icon-calendar />
-                </template>
-              </a-statistic>
-            </a-col>
           </a-row>
         </a-card>
 
@@ -118,48 +98,6 @@
           </a-table>
         </a-card>
 
-        <!-- 最近异常日志 -->
-        <a-card
-          :bordered="false"
-          class="stats-card"
-          title="最近异常日志"
-          v-if="stats.recent_logs && stats.recent_logs.length > 0"
-        >
-          <a-list :bordered="false" size="small">
-            <a-list-item v-for="(log, index) in stats.recent_logs.slice(0, 20)" :key="index">
-              <a-list-item-meta :title="parseLog(log).mp_name || '未知公众号'">
-                <template #avatar>
-                  <a-avatar :style="{ backgroundColor: '#f53f3f' }">
-                    <icon-exclamation-circle />
-                  </a-avatar>
-                </template>
-                <template #description>
-                  <div>
-                    <div style="margin-bottom: 4px">
-                      <icon-clock-circle style="margin-right: 4px" />
-                      {{ parseLog(log).timestamp }}
-                      <a-tag v-if="parseLog(log).mp_id" color="blue" style="margin-left: 8px">
-                        {{ parseLog(log).mp_id }}
-                      </a-tag>
-                    </div>
-                    <div>
-                      <a-link :href="parseLog(log).url" target="_blank" hoverable>
-                        {{ parseLog(log).url }}
-                      </a-link>
-                    </div>
-                  </div>
-                </template>
-              </a-list-item-meta>
-            </a-list-item>
-          </a-list>
-        </a-card>
-
-        <!-- 空状态 -->
-        <a-empty
-          v-if="!loading && stats.total === 0"
-          description="暂无环境异常记录"
-          style="margin-top: 40px"
-        />
       </a-spin>
     </a-page-header>
   </div>

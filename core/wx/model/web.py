@@ -24,10 +24,9 @@ class MpsWeb(WxGather):
             logger.error(e)
         return ""
     # 重写 get_Articles 方法
-    def get_Articles(self, faker_id:str=None,Mps_id:str=None,Mps_title="",CallBack=None,start_page:int=0,MaxPage:int=1,interval=10,Gather_Content=False,Item_Over_CallBack=None,Over_CallBack=None):
+    def get_Articles(self, faker_id:str='',Mps_id:str='',Mps_title="",CallBack=None,start_page:int=0,MaxPage:int=1,interval=10,Gather_Content=False,Item_Over_CallBack=None,Over_CallBack=None):
         super().Start(mp_id=Mps_id)
-        if self.Gather_Content:
-            Gather_Content=True
+        Gather_Content = self.Gather_Content
         print(f"Web浏览器模式,是否采集[{Mps_title}]内容：{Gather_Content}\n")
         # 请求参数
         url = "https://mp.weixin.qq.com/cgi-bin/appmsgpublish"
@@ -57,7 +56,7 @@ class MpsWeb(WxGather):
             time.sleep(random.randint(0,interval))
             try:
                 headers = self.fix_header(url)
-                resp = session.get(url, headers=headers, params = params, verify=False)
+                resp = session.get(url, headers=headers, params = params, verify=False, timeout=(10, 30))
                 
                 msg = resp.json()
                 self._cookies =resp.cookies
@@ -69,6 +68,15 @@ class MpsWeb(WxGather):
                 if msg['base_resp']['ret'] == 200003:
                     super().Error("Invalid Session, stop at {}".format(str(begin)),code="Invalid Session")
                     break
+                # 处理200002错误：参数无效
+                if msg['base_resp']['ret'] == 200002:
+                    super().Error("Invalid arguments, stop at {}".format(str(begin)), code="Invalid Arguments")
+                    # 设置feed状态为0并继续下一个任务
+                    self._set_feed_status(Mps_id, 0)
+                    # 不break，而是return，这样可以继续下一个任务
+                    super().Item_Over(item={"mps_id":Mps_id,"mps_title":Mps_title},CallBack=Item_Over_CallBack)
+                    super().Over(CallBack=Over_CallBack)
+                    return
                 if msg['base_resp']['ret'] != 0:
                     super().Error("错误原因:{}:代码:{}".format(msg['base_resp']['err_msg'],msg['base_resp']['ret']),code=msg['base_resp']['err_msg'])
                     break    
@@ -98,6 +106,7 @@ class MpsWeb(WxGather):
                                             super().Wait(3,10,tips=f"{item['title']} 采集完成")
                                     else:
                                         item["content"] = ""
+                                    item["publish_info"] = publish_info.get("publish_info","")
                                     item["id"] = item["aid"]
                                     item["mp_id"] = Mps_id
                                     if CallBack is not None:
@@ -115,3 +124,19 @@ class MpsWeb(WxGather):
                 super().Item_Over(item={"mps_id":Mps_id,"mps_title":Mps_title},CallBack=Item_Over_CallBack)
         super().Over(CallBack=Over_CallBack)
         pass
+    # 新增辅助方法用于设置feed状态
+    def _set_feed_status(self, feed_id: str, status: int):
+        """设置feed状态"""
+        try:
+            from core.db import DB
+            from core.models import Feed
+            session = DB.get_session()
+            feed = session.query(Feed).filter(Feed.id == feed_id).first()
+            if feed:
+                feed.status = status
+                session.commit()
+                print(f"已将feed {feed_id} 的状态设置为 {status}")
+            else:
+                print(f"未找到feed {feed_id}")
+        except Exception as e:
+            logger.error(f"设置feed状态失败: {e}")

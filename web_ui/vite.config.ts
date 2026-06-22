@@ -14,6 +14,12 @@ export default defineConfig(({ command, mode }) => {
         "@": fileURLToPath(new URL("./src", import.meta.url)),
       },
     },
+    // 定义 Vue 特性标志
+    define: {
+      __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
+      __VUE_OPTIONS_API__: 'true',
+      __VUE_PROD_DEVTOOLS__: 'false',
+    },
     // 基础路径配置
     base: command === "serve" ? "/" : "/",
     // 开发服务器配置
@@ -34,6 +40,10 @@ export default defineConfig(({ command, mode }) => {
       port: 3000,
       proxy: {
         "/views": {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        "/proxy": {
           target: apiTarget,
           changeOrigin: true,
         },

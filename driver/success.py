@@ -1,3 +1,5 @@
+from sqlalchemy.util import b
+
 from .token import set_token
 from core.print import print_warning,print_success
 from core.redis_client import redis_client
@@ -5,7 +7,7 @@ import json
 #判断是否是有效登录 
 
 # 初始化全局变量（作为Redis不可用时的回退）
-WX_LOGIN_ED = True
+WX_LOGIN_ED = False
 WX_LOGIN_INFO = None
 
 import threading
@@ -30,15 +32,44 @@ def setStatus(status:bool):
         WX_LOGIN_ED = status
 
 def getStatus():
-    """获取登录状态，优先从Redis读取，失败则使用全局变量"""
+    """获取登录状态，优先从Redis读取，失败则使用全局变量，并检查token是否过期"""
     global WX_LOGIN_ED
+    import time
+
     # 尝试从Redis读取
     if redis_client.is_connected:
         try:
             val = redis_client._client.get(REDIS_KEY_STATUS)
-            if val is not None:
-                return val == "1"
-        except Exception:
+            if val is not None and val == "1":
+                # 检查token是否过期
+                token_data = getLoginInfo()
+                if token_data and 'expiry' in token_data and token_data['expiry']:
+                    expiry = token_data['expiry']
+                    # 检查剩余秒数
+                    if 'remaining_seconds' in expiry:
+                        remaining = expiry['remaining_seconds']
+                        if remaining is not None and remaining > 0:
+                            return True
+                        else:
+                            # token已过期，更新状态
+                            print_warning("Token已过期，需要重新登录")
+                            setStatus(False)
+                            return False
+                    # 检查过期时间戳
+                    elif 'expiry_timestamp' in expiry:
+                        expiry_timestamp = expiry['expiry_timestamp']
+                        # 过期时间戳 >= 当前时间，说明还没过期
+                        if expiry_timestamp and expiry_timestamp >= time.time():
+                            return True
+                        else:
+                            # token已过期，更新状态
+                            print_warning("Token已过期，需要重新登录")
+                            setStatus(False)
+                            return False
+                # 没有过期信息，但状态为True，暂时返回True
+                return True
+        except Exception as e:
+            print_warning(f"检查登录状态失败: {e}")
             pass
     # 回退到全局变量
     with login_lock:
@@ -74,3 +105,39 @@ def Success(data:dict,ext_data:dict={}):
     else:
             print("\n登录失败，请检查上述错误信息")
             setStatus(False)
+
+def CanGetToken():
+    """检查是否可以获取Token，包括检查登录状态和token过期时间"""
+    import time
+
+    # 检查登录状态
+    if not getStatus():
+        print_warning("当前未登录，请先扫码登录")
+        return False
+
+    # 检查token过期时间
+    token_data = getLoginInfo()
+    if not token_data or not token_data.get('token'):
+        print_warning("Token不存在，请重新登录")
+        setStatus(False)
+        return False
+
+    # 检查过期信息
+    expiry = token_data.get('expiry')
+    if expiry:
+        # 检查剩余秒数
+        if 'remaining_seconds' in expiry:
+            remaining = expiry['remaining_seconds']
+            if remaining is not None and remaining <= 0:
+                print_warning("Token已过期，请重新扫码登录")
+                setStatus(False)
+                return False
+        # 检查过期时间戳
+        elif 'expiry_timestamp' in expiry:
+            expiry_timestamp = expiry['expiry_timestamp']
+            if expiry_timestamp and expiry_timestamp <= time.time():
+                print_warning("Token已过期，请重新扫码登录")
+                setStatus(False)
+                return False
+
+    return True

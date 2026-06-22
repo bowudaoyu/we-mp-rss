@@ -17,7 +17,57 @@ import hashlib
 from core.models.cascade_node import CascadeNode
 
 DB=db.Db(tag="用户连接")
-SECRET_KEY = cfg.get("secret","csol2025")  # 生产环境应使用更安全的密钥
+
+# 安全加固：JWT密钥配置
+# 优先从环境变量获取，否则从配置文件或持久化文件获取，最后才生成随机密钥
+import os
+import warnings
+from pathlib import Path
+
+_SECRET_KEY_FILE = Path(__file__).parent.parent / "data" / ".secret_key"
+
+def _load_or_generate_secret_key() -> str:
+    """加载或生成 SECRET_KEY，确保持久化"""
+    # 1. 优先从环境变量获取
+    _secret_from_env = os.environ.get('SECRET_KEY')
+    if _secret_from_env:
+        return _secret_from_env
+    
+    # 2. 从配置文件获取
+    _secret_from_config = cfg.get("secret")
+    if _secret_from_config and _secret_from_config not in ["csol2025", "we-mp-rss"]:
+        return _secret_from_config
+    
+    # 3. 从持久化文件读取
+    if _SECRET_KEY_FILE.exists():
+        try:
+            _secret = _SECRET_KEY_FILE.read_text().strip()
+            if _secret and len(_secret) >= 32:
+                return _secret
+        except Exception:
+            pass
+    
+    # 4. 生成新的随机密钥并持久化
+    _new_secret = secrets.token_urlsafe(64)
+    try:
+        _SECRET_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECRET_KEY_FILE.write_text(_new_secret)
+        warnings.warn(
+            "⚠️ 已自动生成 SECRET_KEY 并保存到 data/.secret_key 文件，"
+            "重启后 Token 将保持有效。建议在生产环境设置环境变量 SECRET_KEY。",
+            UserWarning
+        )
+    except Exception as e:
+        warnings.warn(
+            f"⚠️ 无法保存 SECRET_KEY 到文件: {e}，重启后 Token 将失效。"
+            "建议设置环境变量 SECRET_KEY。",
+            UserWarning
+        )
+    
+    return _new_secret
+
+SECRET_KEY = _load_or_generate_secret_key()
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(cfg.get("token_expire_minutes",30))
 
@@ -51,10 +101,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{API_BASE}/auth/token",auto_erro
 _user_cache = {}
 # 登录失败次数记录 (格式: {username: (attempts, timestamp)})
 _login_attempts = {}
+# 密码重置验证码存储 (格式: {username: (code, timestamp)})
+_password_reset_codes = {}
 MAX_LOGIN_ATTEMPTS = 5
 # 缓存过期时间配置
 _USER_CACHE_TTL = 3600  # 用户缓存1小时过期
 _LOGIN_ATTEMPTS_TTL = 1800  # 登录失败记录30分钟过期
+_PASSWORD_RESET_CODE_TTL = 300  # 验证码5分钟过期
 
 
 def _cleanup_expired_cache():
@@ -665,3 +718,138 @@ def authenticate_cascade_node(api_key: str, secret_key: str) -> Optional[dict]:
     finally:
         if session is not None:
             session.close()
+
+
+# ===== 密码找回相关功能 =====
+
+import random
+import string
+
+
+def generate_reset_code() -> str:
+    """生成6位数字验证码"""
+    return ''.join(random.choices(string.digits, k=6))
+
+
+def create_password_reset_code(username: str) -> str:
+    """
+    为用户创建密码重置验证码
+    
+    参数:
+        username: 用户名
+    
+    返回: 验证码
+    """
+    _cleanup_expired_cache()
+    code = generate_reset_code()
+    _password_reset_codes[username] = (code, datetime.utcnow())
+    return code
+
+
+def verify_reset_code(username: str, code: str) -> bool:
+    """
+    验证密码重置验证码
+    
+    参数:
+        username: 用户名
+        code: 验证码
+    
+    返回: 是否验证成功
+    """
+    _cleanup_expired_cache()
+    
+    if username not in _password_reset_codes:
+        return False
+    
+    stored_code, created_time = _password_reset_codes[username]
+    
+    # 检查验证码是否过期
+    if (datetime.utcnow() - created_time).total_seconds() > _PASSWORD_RESET_CODE_TTL:
+        del _password_reset_codes[username]
+        return False
+    
+    # 验证码匹配
+    if stored_code == code:
+        # 验证成功后删除验证码
+        del _password_reset_codes[username]
+        return True
+    
+    return False
+
+
+def reset_user_password(username: str, new_password: str) -> bool:
+    """
+    重置用户密码
+    
+    参数:
+        username: 用户名
+        new_password: 新密码
+    
+    返回: 是否重置成功
+    """
+    session = None
+    try:
+        session = DB.get_session()
+        user = session.query(DBUser).filter(DBUser.username == username).first()
+        if not user:
+            return False
+        
+        # 更新密码
+        user.password_hash = pwd_context.hash(new_password)
+        user.updated_at = datetime.utcnow()
+        session.commit()
+        
+        # 清除用户缓存
+        clear_user_cache(username)
+        
+        return True
+    except Exception as e:
+        if session:
+            session.rollback()
+        from core.print import print_error
+        print_error(f"重置密码错误: {str(e)}")
+        return False
+    finally:
+        if session is not None:
+            session.close()
+
+
+def send_reset_code_notice(username: str, code: str) -> bool:
+    """
+    通过系统通知发送密码重置验证码
+    
+    参数:
+        username: 用户名
+        code: 验证码
+    
+    返回: 是否发送成功
+    """
+    from jobs.notice import sys_notice
+    from core.print import print_info, print_error
+    from core.config import cfg
+    
+    # 检查是否有配置通知渠道
+    notice_cfg = cfg.get('notice', {}) or {}
+    has_webhook = any([
+        notice_cfg.get('dingding', ''),
+        notice_cfg.get('feishu', ''),
+        notice_cfg.get('wechat', ''),
+        notice_cfg.get('custom', ''),
+        notice_cfg.get('bark', '')
+    ])
+    
+    if not has_webhook:
+        print_error("未配置任何通知渠道，请在 config.yaml 中配置 notice 相关的 webhook")
+        return False
+    
+    title = "密码重置验证码通知"
+    text = f"用户【{username}】请求重置密码\n验证码：{code}\n有效期5分钟，请勿泄露给他人。"
+    
+    try:
+        sys_notice(text=text, title=title, tag='密码重置')
+        print_info(f"已发送密码重置验证码通知，用户: {username}")
+        return True
+    except Exception as e:
+        print_error(f"发送验证码通知失败: {str(e)}")
+        raise e
+        return False

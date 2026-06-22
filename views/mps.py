@@ -11,7 +11,6 @@ from views.base import get_mps_view
 router = APIRouter(tags=["公众号"])
 
 @router.get("/mps", response_class=HTMLResponse, summary="公众号 - 显示所有公众号")
-@cache_view("mps_page", ttl=1800)  # 缓存30分钟
 async def mps_view(
     request: Request,
     page: int = Query(1, ge=1, description="页码"),
@@ -21,17 +20,20 @@ async def mps_view(
     首页显示所有公众号，支持分页
     """
     try:
-        data=get_mps_view(page, limit)
+        data = get_mps_view(page, limit)
         # 读取模板文件
         template_path = base.mps_template
         with open(template_path, 'r', encoding='utf-8') as f:
             template_content = f.read()
 
         data['site'] = base.site
-        # 添加分页所需的额外字段
-        data['base_url'] = '/views/mps'
-        data['prev_page'] = page - 1 if data.get('has_prev') else page
-        data['next_page'] = page + 1 if data.get('has_next') else page
+        # 生成完整的分页URL
+        has_prev = data.get('has_prev', False)
+        has_next = data.get('has_next', False)
+        prev_page = page - 1 if has_prev else page
+        next_page = page + 1 if has_next else page
+        data['prev_url'] = f"/views/mps?page={prev_page}&limit={limit}" if has_prev else None
+        data['next_url'] = f"/views/mps?page={next_page}&limit={limit}" if has_next else None
         data['item_name'] = '个公众号'
 
         # 使用模板引擎渲染

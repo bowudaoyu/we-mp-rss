@@ -26,5 +26,6 @@
     "python.defaultInterpreterPath": "E:/conda/envs/werss/python.exe",
     "python.terminal.activateEnvironment": true,
     "python.analysis.autoImportCompletions": true,
-    "python.analysis.typeCheckingMode": "basic"
+    "python.analysis.typeCheckingMode": "basic",
+    "diffEditor.renderSideBySide": true
 }

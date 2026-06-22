@@ -3,6 +3,9 @@ __pycache__
 *.tmp
 dist/
 build/
+static/anti_bot*
+static/test.html
+static/fix.html
 *.pyc
 dock_build.bat
 ./db.db
@@ -22,6 +25,9 @@ test.yaml
 .venv
 .idea
 .trae
+.travis
+test.py
+.codeartsdoer
 
 config.yaml
 

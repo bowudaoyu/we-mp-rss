@@ -3,7 +3,6 @@ from core.config import Config,cfg
 # 确保data目录和wx.lic文件存在
 import os
 import json
-
 from core.print import print_success, print_warning
 from core.redis_client import redis_client
 
@@ -37,13 +36,11 @@ def set_token(data:any,ext_data:any=None):
     # 优先存储到Redis，整体存储
     if redis_client.is_connected:
         try:
+            _save_to_local(token_data)
             redis_client._client.set(REDIS_TOKEN_PREFIX + "data", json.dumps(token_data))
             print_success("Token已存储到Redis")
-            _save_to_local(token_data)
         except Exception as e:
             print_warning(f"Redis存储失败，回退到本地文件: {e}")
-            # 回退到本地文件存储
-            _save_to_local(token_data)
     else:
         _save_to_local(token_data)
 
@@ -71,6 +68,8 @@ def get(key:str,default:str="")->str:
     value = token_data.get(key, default)
     if isinstance(value, dict):
         return json.dumps(value)
+    if value=="None":
+        return ''
     return str(value) if value is not None else default
 
 

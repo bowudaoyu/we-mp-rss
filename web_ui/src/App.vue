@@ -163,6 +163,10 @@
             <span class="username">{{ userInfo.username }}</span>
           </div>
           <template #content>
+            <a-doption v-if="haswxLogined && wxLoginInfo?.ext_data" @click="showWxAccountInfo">
+              <template #icon><icon-wechat /></template>
+              公众号信息
+            </a-doption>
             <a-doption @click="goToEditUser">
               <template #icon><icon-user /></template>
               个人中心
@@ -181,6 +185,43 @@
             </a-doption>
           </template>
         </a-dropdown>
+        <!-- 公众号信息弹窗 -->
+        <a-modal v-model:visible="wxAccountVisible" title="公众号信息" :footer="false" :width="400">
+          <div class="wx-account-info" v-if="wxLoginInfo?.ext_data">
+            <div class="wx-account-header">
+              <a-avatar :size="64" class="wx-account-avatar">
+                <img v-if="wxLoginInfo.ext_data.wx_logo" :src="wxLoginInfo.ext_data.wx_logo" alt="公众号头像">
+                <icon-wechat v-else />
+              </a-avatar>
+              <div class="wx-account-name">{{ wxLoginInfo.ext_data.wx_app_name || '未知公众号' }}</div>
+            </div>
+            <a-descriptions :column="1" bordered size="small">
+              <a-descriptions-item label="昨日阅读">
+                {{ wxLoginInfo.ext_data.wx_read_yesterday || 0 }}
+              </a-descriptions-item>
+              <a-descriptions-item label="昨日分享">
+                {{ wxLoginInfo.ext_data.wx_share_yesterday || 0 }}
+              </a-descriptions-item>
+              <a-descriptions-item label="Token状态">
+                <a-tag :color="haswxLogined ? 'green' : 'red'">{{ haswxLogined ? '已授权' : '未授权' }}</a-tag>
+              </a-descriptions-item>
+              <a-descriptions-item label="Token" v-if="wxLoginInfo?.token">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-family: monospace; font-size: 12px; word-break: break-all;">{{ wxLoginInfo.token }}</span>
+                  <a-button size="mini" @click="copyToken">
+                    <template #icon><icon-copy /></template>
+                  </a-button>
+                </div>
+              </a-descriptions-item>
+              <a-descriptions-item label="到期时间" v-if="wxLoginInfo?.expiry?.expiry_time">
+                {{ wxLoginInfo.expiry.expiry_time }}
+              </a-descriptions-item>
+            </a-descriptions>
+          </div>
+          <div v-else class="wx-account-empty">
+            <a-empty description="暂无公众号信息" />
+          </div>
+        </a-modal>
         <WechatAuthQrcode ref="qrcodeRef" @success="handleQrAuthSuccess" />
         <a-modal v-model:visible="sponsorVisible" title="感谢支持" :footer="false" :style="{ zIndex: 1000 }" unmount-on-close>
           <div style="text-align: center;">
@@ -256,6 +297,8 @@ const userInfo = ref({
 })
 const haswxLogined = ref(true)
 const hasLogined = ref(false)
+const wxLoginInfo = ref<any>(null)
+const wxAccountVisible = ref(false)
 const isAuthenticated = computed(() => {
   hasLogined.value = !!localStorage.getItem('token')
   return hasLogined.value
@@ -274,8 +317,20 @@ const fetchSysInfo = async () => {
   try {
     const res = await getSysInfo()
     haswxLogined.value = res?.wx?.login||false
+    wxLoginInfo.value = res?.wx?.info||null
   } catch (error) {
     console.error('获取系统信息失败', error)
+  }
+}
+
+const showWxAccountInfo = () => {
+  wxAccountVisible.value = true
+}
+
+const copyToken = () => {
+  if (wxLoginInfo.value?.token) {
+    navigator.clipboard.writeText(wxLoginInfo.value.token)
+    Message.success('Token已复制到剪贴板')
   }
 }
 
@@ -396,5 +451,26 @@ watch(
   .app-header .header-right {
     display: none !important;
   }
+}
+
+.wx-account-info {
+  padding: 16px 0;
+}
+
+.wx-account-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.wx-account-name {
+  margin-top: 12px;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.wx-account-empty {
+  padding: 40px 0;
 }
 </style>

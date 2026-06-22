@@ -1,4 +1,4 @@
-name: Docker Image Publish
+name: Docker Image Publish GITHUB
 permissions:
   contents: read
 on:
@@ -6,16 +6,12 @@ on:
     branches:
       - main
     paths:  # 仅在指定文件变化时触发（可选）
-      - 'ReadMe.md'
-      - 'README.zh-CN.md'
       - 'core/ver.py'
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - 'config.example.yaml'
+  workflow_dispatch:  # 支持手动触发
 #   release:
 #     types: [published]
 jobs:
-  build-and-push:
+  build-and-push-docker-latest:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

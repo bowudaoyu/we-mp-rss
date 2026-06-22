@@ -8,6 +8,9 @@ def format_content(content:str,content_format:str='html'):
     # content_format: 'text' or 'markdown' or 'html'
     # content: str
     # return: str
+    # 防御性检查：确保 content 不是 None
+    if not content:
+        return ""
     try:
         if content_format == 'text':
             # 去除HTML标签，保留纯文本

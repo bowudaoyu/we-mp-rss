@@ -1,5 +1,5 @@
 # 支持多架构构建
-FROM --platform=$BUILDPLATFORM docker.1ms.run/ubuntu:22.04
+FROM --platform=$BUILDPLATFORM ubuntu:22.04
 
 # 声明构建参数
 ARG BUILDPLATFORM

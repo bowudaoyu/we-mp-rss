@@ -6,8 +6,6 @@ ENV PIP_INDEX_URL=https://mirrors.huaweicloud.com/repository/pypi/simple
 
 # 更新包管理器并安装必要的依赖
 RUN apt-get update && apt-get install -y \
-    fonts-noto-cjk \
-    libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
