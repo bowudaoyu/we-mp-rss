@@ -32,11 +32,15 @@ def expire(cookies:any) :
     # 表示当前会话有效，但不清楚具体过期时间
     # 这样不会导致登录状态被标记为失败
     from core.print import print_warning
-    print_warning("未能从 cookies 中提取有效过期时间，使用默认2小时有效期")
-    default_expiry = time.time() + 7200  # 默认2小时
+    # 微信公众平台会话 cookie(slave_sid 等)常常是会话级、不带 expires 字段，
+    # 实际服务端有效期通常为数天。原来默认仅 2 小时会导致系统过早判定登录失效、
+    # 误发"登录失效"通知并频繁要求重新扫码。这里改为默认 72 小时。
+    DEFAULT_TTL = 72 * 3600  # 默认72小时
+    print_warning(f"未能从 cookies 中提取有效过期时间，使用默认{DEFAULT_TTL // 3600}小时有效期")
+    default_expiry = time.time() + DEFAULT_TTL
     return {
         'expiry_timestamp': default_expiry,
-        'remaining_seconds': 7200,
+        'remaining_seconds': DEFAULT_TTL,
         'expiry_time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(default_expiry))
     }
 

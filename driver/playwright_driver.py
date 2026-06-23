@@ -50,7 +50,7 @@ class PlaywrightController:
     """
 
     def __init__(self, headless: bool = None,
-                 browser_type: str = "webkit",
+                 browser_type: str = None,
                  proxy_url: Optional[str] = "",
                  user_agent: Optional[str] = None,
                  debug: bool = False,
@@ -68,6 +68,15 @@ class PlaywrightController:
         """
         # 默认使用 headless=True（适合Docker环境），可通过环境变量覆盖
         self.headless = os.environ.get("HEADLESS", "true").lower() == "true" if headless is None else headless
+        # 浏览器内核：显式传入优先；否则读 config.gather.browser_type；
+        # 默认 chromium —— 原默认值 webkit 在多数环境未随 playwright install 安装，
+        # 会导致扫码登录时浏览器启动失败、二维码生成不出来。
+        if browser_type is None:
+            try:
+                from core.config import cfg
+                browser_type = (cfg.get("gather.browser_type", "chromium") or "chromium").strip()
+            except Exception:
+                browser_type = "chromium"
         self.browser_type = browser_type
         self.proxy_url = proxy_url
         self.debug = debug
@@ -119,31 +128,47 @@ class PlaywrightController:
             # 启动 Playwright
             self._playwright = await async_playwright().start()
 
-            # 选择浏览器类型
-            browser_launcher = getattr(self._playwright, self.browser_type)
+            # 候选内核：优先用配置/指定的内核，若启动失败（如未安装）则自动回退
+            # 到已安装的内核，避免因 webkit 未安装等问题导致二维码完全出不来。
+            candidates = []
+            for bt in [self.browser_type, "chromium", "firefox"]:
+                if bt and bt not in candidates:
+                    candidates.append(bt)
 
-            # 启动浏览器
-            # 注意：不同浏览器支持的参数不同
-            # - Chromium: 支持 --disable-blink-features, --disable-dev-shm-usage
-            # - Firefox: 不支持这些参数
-            # - WebKit: 不支持这些参数
-            launch_options = {
-                "headless": self.headless,
-            }
+            last_err = None
+            for bt in candidates:
+                try:
+                    browser_launcher = getattr(self._playwright, bt)
 
-            # 只为 Chromium 添加特定参数
-            if self.browser_type == "chromium":
-                launch_options["args"] = [
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                ]
+                    # 启动浏览器
+                    # 注意：不同浏览器支持的参数不同
+                    # - Chromium: 支持 --disable-blink-features, --disable-dev-shm-usage
+                    # - Firefox / WebKit: 不支持这些参数
+                    launch_options = {
+                        "headless": self.headless,
+                    }
+                    if bt == "chromium":
+                        launch_options["args"] = [
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-dev-shm-usage",
+                            "--no-sandbox",
+                        ]
+                    if self.proxy_url:
+                        launch_options["proxy"] = {"server": self.proxy_url}
 
-            # 添加代理
-            if self.proxy_url:
-                launch_options["proxy"] = {"server": self.proxy_url}
+                    self._browser = await browser_launcher.launch(**launch_options)
 
-            self._browser = await browser_launcher.launch(**launch_options)
+                    if bt != self.browser_type:
+                        print_warning(f"浏览器内核 [{self.browser_type}] 启动失败，已自动回退到 [{bt}]")
+                    self.browser_type = bt
+                    break
+                except Exception as e:
+                    last_err = e
+                    print_warning(f"浏览器内核 [{bt}] 启动失败: {str(e)[:150]}")
+                    continue
+
+            if self._browser is None:
+                raise last_err or RuntimeError("所有可用浏览器内核均无法启动，请执行 playwright install")
 
             # ========== 核心改造：使用AntiCrawlerConfig ==========
             # 获取反爬虫配置

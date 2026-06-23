@@ -475,7 +475,12 @@ class Wx:
 
             # 等待页面完全加载
             print_info("正在加载登录页面...")
-            await page.wait_for_load_state("networkidle")
+            # 微信登录页会持续长轮询"是否已扫码"，networkidle 可能永远不触发，
+            # 这里加 15s 超时，超时后照常继续生成二维码，避免无限期卡死。
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                print_warning("登录页 networkidle 等待超时(微信页长轮询所致)，继续生成二维码...")
 
             # 定位二维码区域
             qr_tag = ".login__type__container__scan__qrcode"
