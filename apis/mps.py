@@ -366,6 +366,19 @@ async def update_mps(
                     message="请不要频繁更新操作",
                     data={"time_span":time_span}
                 )
+        # start_page 是 0 起算的页序号，end_page 实为 MaxPage（不含的上界），
+        # 采集循环是 `while i < MaxPage`。若 end_page <= start_page 则一次请求都不发，
+        # 却仍然返回 success，前端只会看到“刷新成功，新增 0 篇”，非常误导。
+        # 这里显式拦下空区间，把真实原因告诉用户。
+        if end_page <= start_page:
+            return error_response(
+                code=40003,
+                message=(
+                    f"页码范围为空：起始页 {start_page} 不小于结束页 {end_page}，不会发起任何采集。"
+                    f"起始页从 0 开始、结束页为不含的上界，只抓第一页请填 0 和 1。"
+                ),
+                data={"start_page": start_page, "end_page": end_page},
+            )
         # 同步采集，等待结果返回；失败时把真实原因透出给前端，
         # 避免「异步线程 + 异常被吞」导致前端只看到“刷新成功”但实际 0 篇入库。
         from core.wx import WxGather

@@ -248,10 +248,10 @@
 
           <a-modal v-model:visible="refreshModalVisible" title="刷新设置">
             <a-form :model="refreshForm" :rules="refreshRules">
-              <a-form-item label="起始页" field="startPage">
-                <a-input-number v-model="refreshForm.startPage" :min="1" />
+              <a-form-item label="起始页" field="startPage" tooltip="从 0 开始计数，0 表示最新的一页">
+                <a-input-number v-model="refreshForm.startPage" :min="0" />
               </a-form-item>
-              <a-form-item label="结束页" field="endPage">
+              <a-form-item label="结束页" field="endPage" tooltip="不含该页，只抓第一页请填 起始页 0 / 结束页 1">
                 <a-input-number v-model="refreshForm.endPage" :min="1" />
               </a-form-item>
             </a-form>
