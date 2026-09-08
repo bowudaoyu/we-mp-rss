@@ -48,11 +48,18 @@ def build_article_url(article: Any) -> str:
 
 
 # 微信文章页里同时存在多个时间变量，按可信度排序取第一个命中的。
-# 注意页面里还有一个压缩后的 `var ct=et(r,G)`（无引号），所以必须限定引号+纯数字。
+# 两类页面用的变量名不一样：常规图文是 `var ct = "…"`，图片消息
+# （itemShowType=8，common_share.html）是 `window.ct = '…'` 和 `ori_create_time: '…'`。
+# 两个坑：
+#   1. 页面里还有一处压缩后的 `var ct=et(r,G)`（无引号），所以必须限定引号+纯数字；
+#   2. 同页的 `svr_time` / `enterid` / `filter_time` 都是“当前时间”，绝不能匹配进来。
 _PUBLISH_TIME_PATTERNS = (
     r"var\s+ct\s*=\s*[\"'](\d{9,13})[\"']",
+    r"window\.ct\s*=\s*[\"'](\d{9,13})[\"']",
     r"var\s+createTimestamp\s*=\s*[\"'](\d{9,13})[\"']",
+    r"create_timestamp\s*:\s*[\"'](\d{9,13})[\"']",
     r"var\s+oriCreateTime\s*=\s*[\"'](\d{9,13})[\"']",
+    r"ori_create_time\s*:\s*[\"'](\d{9,13})[\"']",
     r"var\s+create_time\s*=\s*[\"'](\d{9,13})[\"']",
 )
 

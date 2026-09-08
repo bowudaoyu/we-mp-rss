@@ -249,6 +249,24 @@ class ContentFetchQueueTest(unittest.TestCase):
         self.assertEqual(article_content.extract_publish_timestamp("no time here"), 0)
         self.assertEqual(article_content.extract_publish_timestamp('var ct = "9999999999"'), 0)
 
+    def test_extract_publish_timestamp_image_post_page(self):
+        # 图片消息（itemShowType=8，common_share.html）用的是另一套变量名，
+        # 同页的 svr_time / enterid / filter_time 都是“当前时间”，不能被匹配走。
+        page = """
+          create_time: '2026-09-07 13:50',
+          ori_create_time: '1788760200' * 1,
+          svr_time: '1788866501' * 1,
+          filter_time: '1788759719' * 1,
+          create_timestamp: '1788760200' * 1,
+          enterid: '1788866501' * 1,
+          window.ct = '1788760200' || '';
+        """
+        self.assertEqual(article_content.extract_publish_timestamp(page), 1788760200)
+
+    def test_extract_publish_timestamp_ignores_server_time_only_page(self):
+        page = "svr_time: '1788866501' * 1, enterid: '1788866501' * 1, filter_time: '1788759719' * 1"
+        self.assertEqual(article_content.extract_publish_timestamp(page), 0)
+
     def test_page_publish_time_corrects_gathered_time(self):
         article = self.add_article("weread", publish_time=1788860357)
 

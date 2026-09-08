@@ -149,9 +149,7 @@ class WXArticleFetcher:
                 info["article_type"] = article_type
 
                 # 获取内容
-                content = await page.locator('#js_content').inner_html()
-                if not content:
-                    content = await page.locator('#js_article').inner_html()
+                content = await self._read_article_body(page)
 
                 # 模拟滚动页面到底部，触发懒加载图片
                 try:
@@ -160,9 +158,7 @@ class WXArticleFetcher:
                     print_warning(f"滚动加载图片失败: {e}")
 
                 # 重新获取内容（滚动后可能有更多图片加载）
-                content = await page.locator('#js_content').inner_html()
-                if not content:
-                    content = await page.locator('#js_article').inner_html()
+                content = await self._read_article_body(page) or content
 
                 content=Web.clean_article_content(str(content))
                 # 更新基本信息
@@ -348,6 +344,29 @@ class WXArticleFetcher:
         except Exception as e:
             print_warning(f"等待图片加载时出错: {e}")
             
+    async def _read_article_body(self, page) -> str:
+        """按优先级取正文容器的内容；容器不存在就立刻跳过。
+
+        `#js_content` 是常规图文的正文容器；图片消息（itemShowType=8，
+        走 common_share.html）没有这个容器，正文和图片都渲染在 `#js_article` 里。
+
+        必须先用 count() 判断存在性：locator(...).inner_html() 在元素缺失时是
+        隐式等待 30 秒再抛错，而不是返回空，原来那种 `if not content` 的兜底
+        永远走不到，两次等待还会把单篇 60 秒的抓取预算直接耗光。
+        """
+        for selector in ("#js_content", "#js_article"):
+            locator = page.locator(selector)
+            try:
+                if await locator.count() == 0:
+                    continue
+                content = await locator.first.inner_html()
+            except Exception as e:
+                print_warning(f"读取正文容器 {selector} 失败: {e}")
+                continue
+            if content and content.strip():
+                return content
+        return ""
+
     async def _extract_exact_publish_time(self, page) -> int:
         """从页面脚本里解析真实发布时间(Unix 秒)，解析不到返回 0。
 
