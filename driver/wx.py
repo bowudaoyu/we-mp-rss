@@ -307,6 +307,20 @@ class Wx:
                 print_error(f"恢复队列失败: {e}")
     def GetCode(self,CallBack=None,Notice=None):
         self.Notice=Notice
+        # 文件锁挡不住连点：set_lock() 是在子线程里（wxLogin 第一步）才执行的，
+        # 而下面的 self.Clean() 又会 release_lock()。两次点击间隔够短时，第二次
+        # 既赶在锁设上之前、又主动把锁删了，于是起第二个登录线程。两个线程共用
+        # self.controller，先结束的那个在 finally 里 Close() 掉浏览器，另一个正
+        # 卡在 Call_Success 内部就会抛 CancelledError —— 它不是 Exception 的子类，
+        # 外层 except Exception 抓不住，线程静默死亡，token 不会被写入，
+        # 只留下「新 cookie + 旧 token」，后续采集全部 200040 invalid csrf token。
+        # 这里直接用线程存活状态兜底，不依赖那个文件锁。
+        _t = getattr(self, "thread", None)
+        if _t is not None and _t.is_alive():
+            print_warning("已有扫码登录正在进行中，请勿重复点击")
+            return {
+                "code":f"{self.wx_login_url}?t={(time.time())}",
+                "msg":"已有扫码登录正在进行中，请勿重复点击！"}
         if  self.check_lock():
             print_warning("微信公众平台登录脚本正在运行，请勿重复运行")
             return {
