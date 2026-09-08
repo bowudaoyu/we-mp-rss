@@ -630,6 +630,13 @@ class Wx:
             print_error("浏览器控制器未初始化")
             return None
 
+        # 记录登录前的 token，用于识别“扫了码但其实没换到新后台”的假成功
+        try:
+            from driver.token import get as _get_val
+            _prev_token = str(_get_val("token", "") or "")
+        except Exception:
+            _prev_token = ""
+
         # 获取token
         token = await self.extract_token_from_requests()
 
@@ -649,6 +656,22 @@ class Wx:
                 print_error(f"获取公众号信息失败: {str(e)}")
                 self.ext_data = None
             Store.save(cookies)
+            # token 是从当前页面 URL 里正则抠出来的（extract_token_from_requests），
+            # 而“切换账号”流程一开始就用旧 token 拼了 home 页 URL 打开。若扫码的微信号
+            # 没有绑定任何公众号，页面进不到真正的后台首页，URL 里那个旧 token 还在，
+            # 就会被原样抠回来 —— 结果是「新 cookie + 旧 token」，后续采集必然
+            # 报 200040 invalid csrf token，但这里却打印“登录成功”。
+            # 这里显式识别这种假成功，把真实原因说清楚。
+            _new_token = str((self.SESSION or {}).get("token") or "")
+            _app_name = (self.ext_data or {}).get("wx_app_name") or ""
+            if _new_token and _new_token == str(_prev_token or "") and not _app_name:
+                print_error(
+                    f"登录疑似未真正生效：token 仍是登录前的 {_new_token}，且读不到公众号名称。"
+                    f"最常见原因是扫码的微信号没有绑定任何公众号——"
+                    f"扫码登录公众平台要求该微信号是某个公众号的管理员或运营者。"
+                    f"此时 cookie 已被换成新的、token 还是旧的，采集会报 200040 invalid csrf token。"
+                    f"请用有公众号权限的微信号重新扫码。"
+                )
             # 保存新的 token 和 cookie
             if self.SESSION and self.SESSION.get("token"):
                 from driver.token import set_token
