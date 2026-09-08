@@ -133,10 +133,19 @@ class PlaywrightController:
             # 补丁：支持 BROWSER_TYPE 环境变量，用户可强制指定 webkit/chromium/firefox，
             # 微信公众平台在 Windows 本地 Chrome 下经常触发反爬（QR 加载超时），
             # 此时设置 BROWSER_TYPE=webkit 可绕过。
+            # CHROME_PATH 必须在分支之前先初始化：下方 chromium 分支无条件引用它，
+            # 走 BROWSER_TYPE 强制分支时若未赋值会抛 UnboundLocalError
+            # （cannot access local variable 'CHROME_PATH'），导致浏览器启动失败、
+            # 扫码登录二维码始终生成不出来。
+            CHROME_PATH = None
             _forced_browser = os.environ.get("BROWSER_TYPE", "").strip().lower()
             if _forced_browser in ("webkit", "chromium", "firefox", "msedge"):
                 self.browser_type = _forced_browser
                 print_info(f"通过 BROWSER_TYPE 强制使用浏览器: {self.browser_type}")
+                # 强制指定引擎时不做自动发现，只认用户显式给出的可执行文件路径
+                _explicit = os.environ.get("CHROME_EXECUTABLE_PATH")
+                if _explicit and os.path.exists(_explicit):
+                    CHROME_PATH = _explicit
             else:
                 CHROME_PATH = get_chrome_executable_path()
                 if CHROME_PATH:
