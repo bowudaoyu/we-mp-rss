@@ -144,6 +144,8 @@ gather:
   content_max_failures: ${GATHER.CONTENT_MAX_FAILURES:-3}
   #首选模式失败后是否回退到另一模式；设为False可启用api-only
   content_fallback: ${GATHER.CONTENT_FALLBACK:-True}
+  #是否用文章页里的真实发布时间订正入库时间 默认True
+  fix_publish_time: ${GATHER.FIX_PUBLISH_TIME:-True}
   #是否清理html标签 默认True
   clean_html: ${GATHER.CLEAN_HTML:-False}
   #浏览器类型 默认firefox 允许值 firefox/edge/webkit

@@ -142,7 +142,7 @@ class ContentFetchQueueTest(unittest.TestCase):
         with patch.object(
             article_content,
             "fetch_article_content",
-            return_value=("", "web", ""),
+            return_value=("", "web", "", 0),
         ):
             updated, mode = article_content.sync_article_content(
                 self.session,
@@ -165,7 +165,7 @@ class ContentFetchQueueTest(unittest.TestCase):
         with patch.object(
             article_content,
             "fetch_article_content",
-            return_value=("", "web", ""),
+            return_value=("", "web", "", 0),
         ):
             updated, _ = article_content.sync_article_content(
                 self.session,
@@ -188,7 +188,7 @@ class ContentFetchQueueTest(unittest.TestCase):
         with patch.object(
             article_content,
             "fetch_article_content",
-            return_value=("", "api", ""),
+            return_value=("", "api", "", 0),
         ):
             updated, _ = article_content.sync_article_content(
                 self.session,
@@ -212,6 +212,7 @@ class ContentFetchQueueTest(unittest.TestCase):
         response_html = """
         <html><body>
           <div>page chrome</div>
+          <script>var ct = "1788352200";</script>
           <div id="js_content"><p>article body</p></div>
         </body></html>
         """
@@ -225,7 +226,54 @@ class ContentFetchQueueTest(unittest.TestCase):
 
         self.assertIn("article body", content)
         self.assertNotIn("page chrome", content)
-        self.assertEqual(metadata, {})
+        self.assertEqual(metadata, {"publish_time_exact": 1788352200})
+
+    def test_extract_publish_timestamp(self):
+        page = """
+        var ct=et(r,G)
+        var oriCreateTime = '1788352200'
+        var createTime = '2026-09-02 20:30'
+        var create_time = "1788352200" * 1
+        var ct = "1788352200"
+        """
+        # 压缩脚本里的 `var ct=et(r,G)` 不能被误当成时间戳
+        self.assertEqual(article_content.extract_publish_timestamp(page), 1788352200)
+        # 毫秒时间戳归一到秒
+        self.assertEqual(
+            article_content.extract_publish_timestamp('var ct = "1788352200000"'),
+            1788352200,
+        )
+        # 解析不到 / 明显越界的一律返回 0，由调用方保留原时间
+        self.assertEqual(article_content.extract_publish_timestamp(""), 0)
+        self.assertEqual(article_content.extract_publish_timestamp(None), 0)
+        self.assertEqual(article_content.extract_publish_timestamp("no time here"), 0)
+        self.assertEqual(article_content.extract_publish_timestamp('var ct = "9999999999"'), 0)
+
+    def test_page_publish_time_corrects_gathered_time(self):
+        article = self.add_article("weread", publish_time=1788860357)
+
+        with patch.object(
+            article_content,
+            "fetch_article_content",
+            return_value=("<p>body</p>", "web", "", 1788352200),
+        ):
+            updated, _ = article_content.sync_article_content(self.session, article)
+
+        self.assertTrue(updated)
+        self.assertEqual(article.publish_time, 1788352200)
+
+    def test_page_publish_time_absent_keeps_existing_time(self):
+        article = self.add_article("keep", publish_time=1788860357)
+
+        with patch.object(
+            article_content,
+            "fetch_article_content",
+            return_value=("<p>body</p>", "web", "", 0),
+        ):
+            updated, _ = article_content.sync_article_content(self.session, article)
+
+        self.assertTrue(updated)
+        self.assertEqual(article.publish_time, 1788860357)
 
     def test_api_fetch_rejects_page_without_article_container(self):
         with patch(
@@ -251,7 +299,7 @@ class ContentFetchQueueTest(unittest.TestCase):
                 return_value=("<p>real article body</p>", {}),
             ),
         ):
-            content, mode, _ = article_content._fetch_article_content_unbounded(
+            content, mode, _, _ = article_content._fetch_article_content_unbounded(
                 "https://example.com/article",
                 preferred_mode="web",
                 allow_fallback=True,
@@ -265,7 +313,7 @@ class ContentFetchQueueTest(unittest.TestCase):
             patch.object(article_content, "_fetch_with_api", return_value=("", {})),
             patch.object(article_content, "_fetch_with_web") as web_fetch,
         ):
-            content, mode, _ = article_content._fetch_article_content_unbounded(
+            content, mode, _, _ = article_content._fetch_article_content_unbounded(
                 "https://example.com/article",
                 preferred_mode="api",
                 allow_fallback=False,

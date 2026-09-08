@@ -73,6 +73,7 @@ class WXArticleFetcher:
             },
             "mp_id": "",
             "article_type": 0,  # 默认为图文类型
+            "publish_time_exact": 0,  # 从页面 `var ct` 解析出的真实发布时间，0=解析失败
             "fetch_error": ""
         }
 
@@ -137,8 +138,11 @@ class WXArticleFetcher:
                 if not title:
                     title = await page.evaluate('() => document.title')
 
-                # 获取发布时间
-                publish_time = await self._extract_publish_time(page)
+                # 获取发布时间：优先用页面里的 `var ct`（精确到秒的真实发布时间），
+                # 解析不到再退回原来的页面文本解析。
+                exact_publish_time = await self._extract_exact_publish_time(page)
+                publish_time = exact_publish_time or await self._extract_publish_time(page)
+                info["publish_time_exact"] = exact_publish_time
 
                 # 检测文章类型
                 article_type = await self._detect_article_type(page)
@@ -344,6 +348,20 @@ class WXArticleFetcher:
         except Exception as e:
             print_warning(f"等待图片加载时出错: {e}")
             
+    async def _extract_exact_publish_time(self, page) -> int:
+        """从页面脚本里解析真实发布时间(Unix 秒)，解析不到返回 0。
+
+        与 _extract_publish_time 的区别：这里失败就返回 0，不会退回当前时间，
+        调用方据此判断“是否拿到了可信的发布时间”。
+        """
+        try:
+            from core.article_content import extract_publish_timestamp
+
+            return extract_publish_timestamp(await page.content())
+        except Exception as e:
+            print_warning(f"解析文章页发布时间失败: {str(e)}")
+            return 0
+
     async def _extract_publish_time(self, page) -> int:
         """
         提取发布时间(异步)

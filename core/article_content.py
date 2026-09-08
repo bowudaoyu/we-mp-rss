@@ -47,6 +47,44 @@ def build_article_url(article: Any) -> str:
     return f"https://mp.weixin.qq.com/s/{origin_id}"
 
 
+# 微信文章页里同时存在多个时间变量，按可信度排序取第一个命中的。
+# 注意页面里还有一个压缩后的 `var ct=et(r,G)`（无引号），所以必须限定引号+纯数字。
+_PUBLISH_TIME_PATTERNS = (
+    r"var\s+ct\s*=\s*[\"'](\d{9,13})[\"']",
+    r"var\s+createTimestamp\s*=\s*[\"'](\d{9,13})[\"']",
+    r"var\s+oriCreateTime\s*=\s*[\"'](\d{9,13})[\"']",
+    r"var\s+create_time\s*=\s*[\"'](\d{9,13})[\"']",
+)
+
+# 2010-01-01 ~ 现在+1 天，用来挡掉误匹配到的其它数字
+_PUBLISH_TIME_MIN = 1262304000
+
+
+def extract_publish_timestamp(html: str | None) -> int:
+    """从微信文章页 HTML 中解析真实发布时间（Unix 秒）；解析不到返回 0。
+
+    微信读书通道拿不到发布时间，入库时填的是抓取时间；正文页里的 `var ct`
+    才是文章真实的发布时间，补抓正文时顺手把它回填回去。
+    """
+    import re
+    import time
+
+    if not html:
+        return 0
+
+    upper_bound = int(time.time()) + 86400
+    for pattern in _PUBLISH_TIME_PATTERNS:
+        match = re.search(pattern, html)
+        if not match:
+            continue
+        value = int(match.group(1))
+        if value > 1_000_000_000_000:  # 毫秒时间戳
+            value //= 1000
+        if _PUBLISH_TIME_MIN <= value <= upper_bound:
+            return value
+    return 0
+
+
 def is_usable_article_content(content: str | None) -> bool:
     """Reject WeChat error/shell pages while allowing short media articles."""
     if not (content or "").strip():
@@ -90,27 +128,30 @@ def _fetch_with_api(url: str) -> Tuple[str, Any]:
     if not response_html or response_html == "DELETED":
         return response_html, {}
 
+    meta = {"publish_time_exact": extract_publish_timestamp(response_html)}
+
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(response_html, "html.parser")
     article_body = soup.select_one("#js_content") or soup.select_one("#js_article")
     if article_body is None:
         print_warning("api response does not contain an article body")
-        return "", {}
-    return str(article_body), {}
+        return "", meta
+    return str(article_body), meta
 
 
 def _fetch_article_content_unbounded(
     url: str,
     preferred_mode: str | None = None,
     allow_fallback: bool = True,
-) -> Tuple[str, str, str]:
+) -> Tuple[str, str, str, int]:
     mode = normalize_content_mode(preferred_mode)
     modes = [mode]
     if allow_fallback:
         modes += [item for item in ("web", "api") if item != mode]
 
     article_type = ""
+    publish_time = 0
     last_mode = mode
 
     for current_mode in modes:
@@ -121,26 +162,31 @@ def _fetch_article_content_unbounded(
             else:
                 content,result = _fetch_with_web(url)
             article_type = result.get("article_type", "")
+            publish_time = int(result.get("publish_time_exact", 0) or 0)
         except Exception as exc:
             print_warning(f"fetch article content failed in {current_mode} mode: {exc}")
             continue
 
         if content == "DELETED":
-            return content, current_mode,article_type
+            return content, current_mode, article_type, publish_time
         if is_usable_article_content(content):
-            return content, current_mode,article_type
+            return content, current_mode, article_type, publish_time
         if content:
             print_warning(f"ignoring unusable article content from {current_mode} mode")
 
-    return "", last_mode, article_type
+    return "", last_mode, article_type, publish_time
 
 
 def fetch_article_content(
     url: str,
     preferred_mode: str | None = None,
     timeout: float | None = None,
-) -> Tuple[str, str, str]:
-    """Fetch article content in an isolated process with a hard timeout."""
+) -> Tuple[str, str, str, int]:
+    """Fetch article content in an isolated process with a hard timeout.
+
+    返回 (正文, 实际使用的通道, 文章类型, 页面解析出的发布时间)；
+    发布时间解析不到时为 0。
+    """
     fetch_timeout = float(timeout or cfg.get("gather.content_fetch_timeout", 60) or 60)
     allow_fallback = bool(cfg.get("gather.content_fallback", True))
     return run_in_process(
@@ -149,6 +195,29 @@ def fetch_article_content(
         preferred_mode,
         allow_fallback,
         timeout=fetch_timeout,
+    )
+
+
+def _apply_page_publish_time(article: Any, page_publish_time: int) -> None:
+    """用正文页解析出的真实发布时间订正入库时间。
+
+    微信读书通道的封面接口不返回发布时间，入库时只能填抓取时间，
+    导致所有文章都显示成“今天发布”。补抓正文本来就要打开文章页，
+    顺手把页面里的 `var ct` 回填过来。相差 60 秒以内视为无需订正。
+    """
+    if not cfg.get("gather.fix_publish_time", True):
+        return
+    if not page_publish_time:
+        return
+
+    current = int(getattr(article, "publish_time", 0) or 0)
+    if abs(current - page_publish_time) <= 60:
+        return
+
+    article.publish_time = page_publish_time
+    print_info(
+        f"article {getattr(article, 'id', '')} publish_time "
+        f"{current} -> {page_publish_time}（按文章页真实发布时间订正）"
     )
 
 
@@ -200,7 +269,9 @@ def sync_article_content(
         return False, "missing_url"
 
     try:
-        content, mode, article_type = fetch_article_content(article_url, preferred_mode)
+        content, mode, article_type, page_publish_time = fetch_article_content(
+            article_url, preferred_mode
+        )
     except ProcessExecutionTimeout as exc:
         mark_article_fetch_failed(session, article, str(exc))
         return False, "timeout"
@@ -235,6 +306,7 @@ def sync_article_content(
         article.content = content
         article.content_html = fix_html(content)
         article.show_type=article_type or article.show_type
+        _apply_page_publish_time(article, page_publish_time)
         article.status = DATA_STATUS.ACTIVE
         article.has_content = 1
         if hasattr(article, "fetch_started_at"):
