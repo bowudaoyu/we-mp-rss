@@ -27,9 +27,11 @@ def build_mp_url(original_id: str) -> str:
     original_id = str(original_id or "").strip()
     if not original_id:
         return ""
-    # 注意：微信文章短链 token 中可能含 '~'（如 4OcS7~rrtk2Lwe4P0YPiGg），
-    # 这是合法字符，必须原样保留。若替换为 '_'，微信会 302 跳转、部分阅读器无法打开。
-    article_token = quote(original_id, safe="~")
+    # 微信文章短链 token 是 base64url（A-Za-z0-9_-），本身不含 '~'。
+    # WeRead 的 reviewId / originalId 用 '~' 代替了 '_'，原样拼进 URL 会打开一个
+    # 31613 字节的错误页（无 og:title、无正文），RSS 链接点不开、正文也永远抓不到。
+    # 实测 5 篇：'~' 原样 → 错误页；换成 '_' → 正常文章页（2-3MB）；换成 '-' → 错误页。
+    article_token = quote(original_id.replace("~", "_"), safe="")
     return f"https://mp.weixin.qq.com/s/{article_token}"
 
 
@@ -37,9 +39,11 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
     """从 WeRead 的 reviewId 推导公众号原文链接。
 
     reviewId 形如 ``MP_WXS_<bookId>_<articleToken>``，末尾段即为
-    mp.weixin.qq.com 原文短链的 token。token 中可能含 ``~``（如
-    ``4OcS7~rrtk2Lwe4P0YPiGg``），须原样保留。新版接口 ``/api/mp/cover``
+    mp.weixin.qq.com 原文短链的 token。新版接口 ``/api/mp/cover``
     不返回 originalId，只能由此推导。
+
+    token 里的 ``~`` 必须换回 ``_``：微信短链 token 是 base64url（A-Za-z0-9_-），
+    不含 ``~``，那是 WeRead 侧对 ``_`` 的编码。原样拼进 URL 会得到 31613 字节的错误页。
     """
     review_id = str(review_id or "").strip()
     if not review_id:
@@ -50,7 +54,7 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
         token = review_id[len(prefix):]
     elif "_" in token:
         token = token.split("_")[-1]
-    return f"https://mp.weixin.qq.com/s/{quote(token, safe='~')}"
+    return f"https://mp.weixin.qq.com/s/{quote(token.replace('~', '_'), safe='')}"
 
 
 def _raise_response_error(payload: dict):
