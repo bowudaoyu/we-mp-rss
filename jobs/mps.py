@@ -232,6 +232,20 @@ def add_job(feeds:list[Feed]=None,task:MessageTask=None,isTest=False):
     # 请宿主机刷新代理去刷新（容器不跑浏览器，见 scripts/host_weread_refresh_agent.py）。
     # 这样用户无需手动敲命令——点执行或定时触发时即自动保活 Cookie。
     if not isTest and (cfg.get("gather.model") or "web") == "weread_mp":
+        # 先用纯 HTTP 续期保活：wr_skey 是小时级凭证，过期后需要完整登录态的
+        # 接口就全挂了，而 /api/mp/cover 不校验它，采集侧看不出异常。续上了就
+        # 不必惊动宿主机刷新代理；续不动才说明整个会话失效、确实需要重新扫码。
+        try:
+            from core.weread_session import renew_persisted_session
+
+            renew = renew_persisted_session(user_agent=cfg.get("user_agent", ""))
+            if renew.get("renewed"):
+                print_info("[cookie] 微信读书会话已续期")
+            elif renew.get("reason") != "cooldown":
+                print_warning(f"[cookie] 会话续期未生效: {renew.get('reason')}")
+        except Exception as e:
+            print_warning(f"[cookie] 会话续期异常（继续执行）: {e}")
+
         try:
             from core.weread_cookie_refresh import request_host_refresh
             res = request_host_refresh()

@@ -105,12 +105,17 @@ def _dedupe_cookie(cookie: str) -> str:
 
 
 def _verify_cookie(cookie: str) -> bool:
-    """实打实请求一次 weread MP 接口，确认 Cookie 真能拉到数据。
+    """实打实请求一次 weread 接口，确认 Cookie 真能通过完整登录态校验。
 
-    仅检查 'wr_vid=' 不够：过期 Cookie 同样带 wr_vid，服务端会以 -2012/-2041 等拒绝。
+    仅检查 'wr_vid=' 不够：过期 Cookie 同样带 wr_vid，服务端会以 -2012 拒绝。
     故刷新后必须用真实接口验证，避免把过期 Cookie 误判为有效（假阳性）。
-    判定标准：响应 JSON 含非零 errCode（如 -2012 登录超时、-2041 等）即视为无效。
-    无 requests 时退化为 True（不阻断），但宿主机场景应装有 requests。
+
+    **不能用 /web/mp/articles 验证**：该列表接口已被微信读书下线，无论 Cookie
+    有效与否都恒返回 -2041，拿它当探针会把每一个 Cookie 都误判成失效。
+    **也不能用 /api/mp/cover 验证**：它不校验 wr_skey，skey 过期后照样返回数据，
+    是反过来的假阳性。
+    这里用 /web/shelf/bookIds——它要求完整登录态，skey 一过期就返回 -2012，
+    正好是我们要探测的那一层。
     """
     try:
         import requests
@@ -118,8 +123,8 @@ def _verify_cookie(cookie: str) -> bool:
         return True
     try:
         r = requests.get(
-            "https://weread.qq.com/web/mp/articles",
-            params={"bookId": "MP_WXS_3528995129", "offset": 0},
+            "https://weread.qq.com/web/shelf/bookIds",
+            params={"bookIds": "MP_WXS_3528995129"},
             headers={
                 "Cookie": cookie,
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -135,11 +140,10 @@ def _verify_cookie(cookie: str) -> bool:
             return False
         if isinstance(j, dict):
             code = j.get("errCode", j.get("errcode", 0))
-            if code:  # 任何非零 errCode 均表示无效（含 -2012/-2041 等）
+            if code:  # 任何非零 errCode 均表示无效（-2012 登录超时等）
                 return False
             # 有实际数据字段才视为有效
-            if "reviews" in j or "articles" in j or "synckey" in j or j.get("bookId"):
-                return True
+            return "data" in j
         return False
     except Exception:
         return False
