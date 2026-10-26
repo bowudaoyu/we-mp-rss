@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from core.wx.model.weread_mp import (
     MpsWereadMP,
     WereadMPAPIError,
+    build_mp_link_from_review_id,
     build_mp_url,
     extract_mp_content,
     parse_mp_articles,
@@ -79,6 +80,25 @@ class WereadMpParsingTest(unittest.TestCase):
 
     def test_build_mp_url_rejects_missing_original_id(self):
         self.assertEqual(build_mp_url(""), "")
+
+    def test_build_mp_url_converts_weread_tilde_to_underscore(self):
+        # 实例：阿信漫谈《再谈定投金额》，微信读书 ID 里 '~' 应为 '_'，
+        # 原样保留会导致微信返回"参数错误"
+        self.assertEqual(
+            build_mp_url("ySsAk3lUFT0Wh~9IZCtr-g"),
+            "https://mp.weixin.qq.com/s/ySsAk3lUFT0Wh_9IZCtr-g",
+        )
+
+    def test_build_mp_link_from_review_id_converts_tilde_and_strips_prefix(self):
+        review_id = "MP_WXS_3990360005_ySsAk3lUFT0Wh~9IZCtr-g"
+        self.assertEqual(
+            build_mp_link_from_review_id(review_id, "MP_WXS_3990360005"),
+            "https://mp.weixin.qq.com/s/ySsAk3lUFT0Wh_9IZCtr-g",
+        )
+        self.assertEqual(
+            build_mp_link_from_review_id(review_id),
+            "https://mp.weixin.qq.com/s/ySsAk3lUFT0Wh_9IZCtr-g",
+        )
 
 
 class WereadMpRequestTest(unittest.TestCase):
@@ -161,15 +181,17 @@ class WereadMpRequestTest(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["x-wr-ticket"], "ticket-value")
 
     @patch("requests.get")
-    def test_article_list_requires_ticket(self, get):
+    def test_article_list_allows_missing_ticket(self, get):
+        response = Mock(status_code=200)
+        response.json.return_value = {"reviews": []}
+        get.return_value = response
         collector = self.make_collector()
         collector._weread_ticket = ""
 
-        with self.assertRaises(WereadMPAPIError) as caught:
-            collector._get_mp_articles_page("MP_WXS_1", offset=0)
+        payload = collector._get_mp_articles_page("MP_WXS_1", offset=0)
 
-        self.assertEqual(caught.exception.code, "missing_ticket")
-        get.assert_not_called()
+        self.assertEqual(payload, {"reviews": []})
+        self.assertNotIn("x-wr-ticket", get.call_args.kwargs["headers"])
 
     @patch("requests.get")
     def test_content_request_extracts_official_article_html(self, get):
@@ -264,6 +286,9 @@ class WereadMpCollectorTest(unittest.TestCase):
         collector._get_mp_articles_page = Mock(
             side_effect=WereadMPAPIError(-2041, "blocked", retriable=False)
         )
+        collector._get_mp_cover = Mock(
+            side_effect=WereadMPAPIError(-2012, "login expired")
+        )
 
         with self.assertRaises(WereadMPAPIError):
             collector.get_Articles(
@@ -275,6 +300,32 @@ class WereadMpCollectorTest(unittest.TestCase):
             )
 
         collector.update_mps.assert_not_called()
+
+    @patch("core.wx.base.RSS.clear_cache")
+    def test_list_failure_falls_back_to_cover_latest_article(self, _clear_cache):
+        collector = self.make_collector()
+        collector._get_mp_articles_page = Mock(
+            side_effect=WereadMPAPIError(-2041, "blocked", retriable=False)
+        )
+        collector._get_mp_cover = Mock(return_value={
+            "reviewId": "MP_WXS_1_latest",
+            "title": "Latest",
+            "pic": "https://example.test/pic.jpg",
+        })
+        saved = []
+
+        collector.get_Articles(
+            Mps_id="MP_WXS_1",
+            Mps_title="Feed title",
+            CallBack=lambda article: saved.append(article) or True,
+            MaxPage=1,
+            interval=0,
+        )
+
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["title"], "Latest")
+        self.assertEqual(saved[0]["url"], "https://mp.weixin.qq.com/s/latest")
+        collector.update_mps.assert_called_once()
 
     @patch("core.wx.base.RSS.clear_cache")
     def test_pagination_counts_groups_not_articles(self, _clear_cache):
@@ -309,6 +360,9 @@ class WereadMpCollectorTest(unittest.TestCase):
         collector = self.make_collector()
         collector._get_feed_update_time.return_value = 1778580001
         collector._get_catchup_page_limit = Mock(return_value=3)
+        collector._is_article_gathered = Mock(
+            side_effect=lambda mp_id, aid: aid == "MP_WXS_1_old"
+        )
         collector._get_mp_articles_page = Mock(side_effect=[
             {
                 "reviews": [{
@@ -349,6 +403,48 @@ class WereadMpCollectorTest(unittest.TestCase):
                 unittest.mock.call("MP_WXS_1", offset=1),
             ],
         )
+        collector.update_mps.assert_called_once()
+
+    @patch("core.wx.base.RSS.clear_cache")
+    def test_cover_era_update_time_does_not_block_backfill(self, _clear_cache):
+        """cover 模式写入的 update_time 是抓取时间（晚于文章发布时间），
+        不能因此跳过 cover 时代漏采的文章；以入库记录为停止边界。"""
+        collector = self.make_collector()
+        collector._get_feed_update_time.return_value = 1778700000
+        collector._is_article_gathered = Mock(
+            side_effect=lambda mp_id, aid: aid == "MP_WXS_1_latest"
+        )
+        collector._get_mp_articles_page = Mock(return_value={
+            "reviews": [{
+                "subReviews": [
+                    {
+                        "review": {
+                            "reviewId": "MP_WXS_1_latest",
+                            "createTime": 1778580003,
+                            "mpInfo": {"title": "Latest", "originalId": "latest"},
+                        }
+                    },
+                    {
+                        "review": {
+                            "reviewId": "MP_WXS_1_missed",
+                            "createTime": 1778580002,
+                            "mpInfo": {"title": "Missed", "originalId": "missed"},
+                        }
+                    },
+                ]
+            }]
+        })
+        saved = []
+
+        collector.get_Articles(
+            Mps_id="MP_WXS_1",
+            Mps_title="Feed title",
+            CallBack=lambda article: saved.append(article) or True,
+            MaxPage=1,
+            interval=0,
+        )
+
+        self.assertEqual([a["title"] for a in saved], ["Missed"])
         collector.update_mps.assert_called_once()
 
     @patch("core.wx.base.RSS.clear_cache")

@@ -3,7 +3,6 @@
 import time
 from urllib.parse import quote
 
-import requests
 from bs4 import BeautifulSoup
 
 from core.log import logger
@@ -27,11 +26,11 @@ def build_mp_url(original_id: str) -> str:
     original_id = str(original_id or "").strip()
     if not original_id:
         return ""
-    # 微信文章短链 token 是 base64url（A-Za-z0-9_-），本身不含 '~'。
-    # WeRead 的 reviewId / originalId 用 '~' 代替了 '_'，原样拼进 URL 会打开一个
-    # 31613 字节的错误页（无 og:title、无正文），RSS 链接点不开、正文也永远抓不到。
-    # 实测 5 篇：'~' 原样 → 错误页；换成 '_' → 正常文章页（2-3MB）；换成 '-' → 错误页。
-    article_token = quote(original_id.replace("~", "_"), safe="")
+    # 微信文章短链 token 的字符集是 URL-safe 的（A-Za-z0-9_-），
+    # 微信读书返回的 ID 里把 '_' 写成了 '~'，必须换回来，否则微信返回"参数错误"。（如 ySsAk3lUFT0Wh~9IZCtr-g）
+    # （实测 2026-09-23：149 篇含 '~' 的链接全部参数错误，替换后 100% 可打开。）
+    original_id = original_id.replace("~", "_")
+    article_token = quote(original_id, safe="")
     return f"https://mp.weixin.qq.com/s/{article_token}"
 
 
@@ -39,11 +38,9 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
     """从 WeRead 的 reviewId 推导公众号原文链接。
 
     reviewId 形如 ``MP_WXS_<bookId>_<articleToken>``，末尾段即为
-    mp.weixin.qq.com 原文短链的 token。新版接口 ``/api/mp/cover``
+    mp.weixin.qq.com 原文短链的 token。微信读书把 token 里的 ``_`` 写成了
+    ``~``，须还原为 ``_``，否则微信返回"参数错误"。新版接口 ``/api/mp/cover``
     不返回 originalId，只能由此推导。
-
-    token 里的 ``~`` 必须换回 ``_``：微信短链 token 是 base64url（A-Za-z0-9_-），
-    不含 ``~``，那是 WeRead 侧对 ``_`` 的编码。原样拼进 URL 会得到 31613 字节的错误页。
     """
     review_id = str(review_id or "").strip()
     if not review_id:
@@ -54,7 +51,9 @@ def build_mp_link_from_review_id(review_id: str, book_id: str = "") -> str:
         token = review_id[len(prefix):]
     elif "_" in token:
         token = token.split("_")[-1]
-    return f"https://mp.weixin.qq.com/s/{quote(token.replace('~', '_'), safe='')}"
+    # 前缀拆分依赖原始的 '_'，'~' → '_' 的还原必须放在拆分之后
+    token = token.replace("~", "_")
+    return f"https://mp.weixin.qq.com/s/{quote(token, safe='')}"
 
 
 def _raise_response_error(payload: dict):
@@ -107,10 +106,81 @@ def parse_mp_articles(payload: dict):
     return articles, len(groups)
 
 
+def _extract_js_single_quoted(html: str, marker: str) -> str:
+    """从页面 JS 里按转义感知方式提取单引号字符串（处理 \\x0a / \\' 等转义）。"""
+    i = html.find(marker)
+    if i < 0:
+        return ""
+    i += len(marker)
+    out = []
+    k = i
+    while k < len(html):
+        ch = html[k]
+        if ch == "\\":
+            out.append(html[k : k + 2])
+            k += 2
+            continue
+        if ch == "'":
+            break
+        out.append(ch)
+        k += 1
+    return "".join(out)
+
+
+def _js_unescape(s: str) -> str:
+    out = []
+    m = 0
+    while m < len(s):
+        c = s[m]
+        if c == "\\" and m + 1 < len(s):
+            nxt = s[m + 1]
+            if nxt == "x" and m + 3 < len(s):
+                try:
+                    out.append(chr(int(s[m + 2 : m + 4], 16)))
+                    m += 4
+                    continue
+                except ValueError:
+                    pass
+            mapping = {"n": "\n", "t": "\t", "r": "\r", "'": "'", '"': '"', "\\": "\\"}
+            out.append(mapping.get(nxt, nxt))
+            m += 2
+        else:
+            out.append(c)
+            m += 1
+    return "".join(out)
+
+
+def _extract_content_noencode(html: str) -> str:
+    """兜底：从页面分享配置 JS 变量 content_noencode 提取全文纯文本。
+
+    2026-10 实测：微信已改版文章页，匿名公开页与微信读书代理页均不再输出
+    ``<div id="js_content">``，全文改放在 JS 变量 ``content_noencode``（纯文本，
+    换行为 \\x0a）。提取后按段落转成 <p> HTML，图片类富文本元素会丢失（新页面
+    本身也不含正文 <img>，为微信侧行为而非提取缺陷）。
+    """
+    raw = _extract_js_single_quoted(html, "content_noencode: '")
+    if not raw:
+        raw = _extract_js_single_quoted(html, "content_noencode:'")
+    if not raw:
+        return ""
+    text = _js_unescape(raw).strip()
+    if not text:
+        return ""
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    escaped = []
+    for p in paragraphs:
+        p = p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        escaped.append(f"<p>{p}</p>")
+    return "".join(escaped)
+
+
 def extract_mp_content(html: str) -> str:
     soup = BeautifulSoup(html or "", "html.parser")
     content = soup.select_one("#js_content") or soup.select_one(".rich_media_content")
     if content is None:
+        fallback = _extract_content_noencode(html or "")
+        if fallback:
+            return fallback
         raise WereadMPAPIError("invalid_content", "article body was not found")
     for element in content.select("script, style"):
         element.decompose()
@@ -147,32 +217,23 @@ class MpsWereadMP(MpsWeread):
         return max(float(cfg.get("weread.page_interval", 1) or 0), 0)
 
     def _request_headers(self, include_ticket=False):
-        headers = {
-            "Cookie": self._weread_cookies,
-            "User-Agent": self.user_agent,
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Origin": "https://weread.qq.com",
-            "Referer": "https://weread.qq.com/",
-        }
-        if include_ticket and self._weread_ticket:
-            # 新版微信读书已弃用 x-wr-ticket，仅需有效 Cookie 即可拉取文章列表；
-            # 保留旧逻辑以便兼容旧版微信读书。无 ticket 时不拦截请求。
-            headers["x-wr-ticket"] = self._weread_ticket
-        return headers
+        """已并入基类 ``_weread_headers``，保留此方法仅作兼容别名。"""
+        return self._weread_headers(include_ticket=include_ticket)
 
     def _get_mp_articles_page(self, book_id: str, offset=0):
-        # 注意：/web/mp/articles 已被新版微信读书废弃（实测恒返回 -2041），
-        # 该方法仅保留供旧版兼容与测试使用；生产链路请用 _get_mp_cover。
+        # /web/mp/articles 曾在部分旧 Cookie 上返回 -2041，当时据此回退到 cover 方案；
+        # 实测该列表接口可用，是增量补抓的主路径。失败时由 get_Articles 回退 cover。
+        # 内部走 _weread_http_get，带多账号配额 failover。
         try:
-            response = requests.get(
+            response = self._weread_http_get(
                 f"{WEREAD_WEB_BASE}/web/mp/articles",
                 params={"bookId": book_id, "offset": offset},
-                headers=self._request_headers(include_ticket=True),
-                proxies=self._get_proxies(),
-                timeout=(10, 30),
+                include_ticket=True,
             )
-        except requests.RequestException as exc:
+        except Exception as exc:
+            from core.wx.model.weread_mp import WereadMPAPIError
+            if isinstance(exc, WereadMPAPIError):
+                raise
             raise WereadMPAPIError("network_error", str(exc)) from exc
         if response.status_code != 200:
             raise WereadMPAPIError(
@@ -189,19 +250,18 @@ class MpsWereadMP(MpsWeread):
         return payload
 
     def _get_mp_cover(self, book_id: str) -> dict:
-        """获取公众号最新一篇文章（新版微信读书唯一可用入口）。
+        """获取公众号最新一篇文章（列表接口不可用时的兜底入口）。
 
         返回: {"name", "title", "pic", "reviewId", ...}；无文章或接口异常时抛错。
         """
         try:
-            response = requests.get(
+            response = self._weread_http_get(
                 f"{WEREAD_WEB_BASE}/api/mp/cover",
                 params={"bookId": book_id},
-                headers=self._request_headers(),
-                proxies=self._get_proxies(),
-                timeout=(10, 30),
             )
-        except requests.RequestException as exc:
+        except Exception as exc:
+            if isinstance(exc, WereadMPAPIError):
+                raise
             raise WereadMPAPIError("network_error", str(exc)) from exc
         if response.status_code != 200:
             raise WereadMPAPIError(
@@ -248,17 +308,14 @@ class MpsWereadMP(MpsWeread):
             session.close()
 
     def _get_mp_content(self, review_id: str):
-        headers = self._request_headers()
-        headers["Accept"] = "text/html,application/xhtml+xml,*/*"
         try:
-            response = requests.get(
+            response = self._weread_http_get(
                 f"{WEREAD_WEB_BASE}/web/mp/content",
                 params={"reviewId": review_id},
-                headers=headers,
-                proxies=self._get_proxies(),
-                timeout=(10, 30),
             )
-        except requests.RequestException as exc:
+        except Exception as exc:
+            if isinstance(exc, WereadMPAPIError):
+                raise
             raise WereadMPAPIError("network_error", str(exc)) from exc
         if response.status_code != 200:
             raise WereadMPAPIError(
@@ -266,6 +323,170 @@ class MpsWereadMP(MpsWeread):
                 f"article content returned HTTP {response.status_code}",
             )
         return extract_mp_content(response.text)
+
+    def _collect_latest_via_cover(
+        self,
+        book_id: str,
+        Mps_id: str,
+        Mps_title: str,
+        gather_content: bool,
+        CallBack=None,
+        Item_Over_CallBack=None,
+    ) -> int:
+        """兜底方案：通过 /api/mp/cover 只采集最新一篇文章。"""
+        cover = self._get_mp_cover(book_id)
+        review_id = (cover.get("reviewId") or "").strip()
+        title = (cover.get("title") or "").strip()
+        self.response_valid = True
+
+        if not review_id:
+            raise WereadMPAPIError(
+                "empty_cover",
+                f"公众号「{Mps_title}」暂无文章",
+                retriable=False,
+            )
+
+        # 跨会话增量：最新文章已入库则无需重复采集
+        if self._is_article_gathered(Mps_id, review_id):
+            print_info(f"无新文章：最新《{title}》已在库中，跳过")
+            return self._get_feed_update_time(Mps_id)
+
+        print_info(f"发现新文章: {title}")
+        item = {
+            "aid": review_id,
+            "id": review_id,
+            "title": title,
+            "link": build_mp_link_from_review_id(review_id, book_id),
+            "cover": cover.get("pic") or "",
+            "digest": cover.get("digest") or "",
+            "content": "",
+            "create_time": int(time.time()),
+            "update_time": int(time.time()),
+            "read_num": 0,
+            "like_num": 0,
+            "item_show_type": 0,
+            "copyright_stat": 1,
+            "mp_id": Mps_id,
+        }
+        if gather_content:
+            content_interval = self._get_content_interval()
+            if content_interval:
+                time.sleep(content_interval)
+            try:
+                item["content"] = self._get_mp_content(review_id)
+            except WereadMPAPIError as exc:
+                logger.warning(f"微信读书正文获取失败 [{review_id}]: {exc}")
+        if CallBack is not None:
+            super().FillBack(
+                CallBack=CallBack,
+                data=item,
+                Ext_Data={"mp_title": Mps_title, "mp_id": Mps_id},
+            )
+        if Item_Over_CallBack is not None:
+            Item_Over_CallBack(item)
+        return int(item["update_time"])
+
+    def _collect_via_article_list(
+        self,
+        book_id: str,
+        Mps_id: str,
+        Mps_title: str,
+        gather_content: bool,
+        start_page: int,
+        MaxPage: int,
+        CallBack=None,
+        Item_Over_CallBack=None,
+    ) -> int:
+        """增量补抓：翻页扫描文章列表，采集所有尚未入库的文章。
+
+        停止条件（满足其一即停止翻页）：
+        - 遇到已入库的文章（``_is_article_gathered``，以 articles 表为已采记录的唯一权威）
+        - 列表翻完（空页）或达到 ``weread.mp_max_pages`` 页数上限
+
+        注意：不以 ``Feed.update_time`` 作为停止边界。cover 兜底模式会把
+        **抓取时间**（而非文章发布时间）写入 update_time，若按时间停止，
+        cover 时代漏采的文章（发布早于上次抓取、但不是当时最新一篇）将被永久
+        跳过。以入库记录为边界可以在 cover → 列表切换后一次性补齐这些漏采文章，
+        稳态下第一页就会命中已入库文章，效率不受影响。
+
+        翻页间隔 ``weread.page_interval``、正文请求间隔 ``weread.content_interval``
+        用于控制请求频率，避免触发微信读书流控。
+        """
+        start_page = max(int(start_page or 0), 0)
+        end_page = max(int(MaxPage or 1), start_page + 1)
+        offset = start_page
+        latest_publish_time = 0
+        content_failures = []
+        previous_update_time = self._get_feed_update_time(Mps_id)
+        requested_pages = end_page - start_page
+        page_limit = (
+            self._get_catchup_page_limit(requested_pages)
+            if previous_update_time
+            else requested_pages
+        )
+        reached_gathered = not previous_update_time
+        content_request_count = 0
+        content_interval = self._get_content_interval()
+        page_interval = self._get_page_interval()
+        new_count = 0
+
+        for page in range(start_page, start_page + page_limit):
+            if page > start_page and page_interval:
+                time.sleep(page_interval)
+            payload = self._get_mp_articles_page(book_id, offset=offset)
+            articles, group_count = parse_mp_articles(payload)
+            self.response_valid = True
+
+            for item in articles:
+                if super().HasGathered(item["aid"]):
+                    continue
+                publish_time = int(item.get("update_time") or item.get("create_time") or 0)
+                if self._is_article_gathered(Mps_id, item["aid"]):
+                    reached_gathered = True
+                    continue
+                item["mp_id"] = Mps_id
+                latest_publish_time = max(latest_publish_time, publish_time)
+                if gather_content:
+                    if content_request_count and content_interval:
+                        time.sleep(content_interval)
+                    content_request_count += 1
+                    try:
+                        item["content"] = self._get_mp_content(item["aid"])
+                    except WereadMPAPIError as exc:
+                        logger.warning(f"微信读书正文获取失败 [{item['aid']}]: {exc}")
+                        content_failures.append(item["aid"])
+                        continue
+                if CallBack is not None:
+                    super().FillBack(
+                        CallBack=CallBack,
+                        data=item,
+                        Ext_Data={"mp_title": Mps_title, "mp_id": Mps_id},
+                    )
+                if Item_Over_CallBack is not None:
+                    Item_Over_CallBack(item)
+                new_count += 1
+
+            if group_count == 0:
+                reached_gathered = True
+                break
+            # WeRead defines offset in top-level review groups, not subReviews.
+            offset += group_count
+            if previous_update_time and reached_gathered:
+                break
+
+        if content_failures:
+            raise WereadMPAPIError(
+                "content_incomplete",
+                f"{len(content_failures)} article bodies could not be fetched",
+            )
+        if not reached_gathered:
+            raise WereadMPAPIError(
+                "backlog_incomplete",
+                f"catch-up did not reach any gathered article after {page_limit} pages",
+            )
+
+        print_info(f"[{Mps_title}] 增量补抓完成: 新增 {new_count} 篇")
+        return latest_publish_time or previous_update_time
 
     def get_Articles(
         self,
@@ -282,10 +503,10 @@ class MpsWereadMP(MpsWeread):
     ):
         """Collect one existing WeChat feed without changing its RSS identity.
 
-        新版微信读书网页版已废弃 ``/web/mp/articles`` 列表接口（恒返回 -2041），
-        前端仅保留 ``/api/mp/cover``（最新一篇）+ ``/web/mp/content``（正文）。
-        因此采用「cover 增量」方案：每次只取最新一篇文章，已入库则跳过，
-        无法回补历史文章列表（旧版接口才支持）。
+        主路径走 ``/web/mp/articles`` 列表接口做增量补抓：从最新一页开始翻页，
+        采集所有尚未入库的文章，遇到已入库文章即停止（上一轮到这一轮之间漏采的
+        文章会一并补齐）。列表接口不可用（如 -2012 登录超时 / -2041 等）时回退到
+        ``/api/mp/cover`` 只取最新一篇的兜底逻辑，保证采集不中断。
         """
         self.articles = []
         self.aids = []
@@ -322,61 +543,36 @@ class MpsWereadMP(MpsWeread):
             print_warning(f"[{Mps_title}] 书架检查异常: {exc}")
 
         gather_content = bool(Gather_Content or self.Gather_Content)
-        content_interval = self._get_content_interval()
-        latest_publish_time = 0
 
         print_info(f"微信读书公众号采集模式: {Mps_title} ({book_id})")
         try:
-            cover = self._get_mp_cover(book_id)
-            review_id = (cover.get("reviewId") or "").strip()
-            title = (cover.get("title") or "").strip()
-            self.response_valid = True
-
-            if not review_id:
-                raise WereadMPAPIError(
-                    "empty_cover",
-                    f"公众号「{Mps_title}」暂无文章",
-                    retriable=False,
+            try:
+                latest_publish_time = self._collect_via_article_list(
+                    book_id,
+                    Mps_id,
+                    Mps_title,
+                    gather_content,
+                    start_page,
+                    MaxPage,
+                    CallBack=CallBack,
+                    Item_Over_CallBack=Item_Over_CallBack,
                 )
-
-            # 跨会话增量：最新文章已入库则无需重复采集
-            if self._is_article_gathered(Mps_id, review_id):
-                print_info(f"无新文章：最新《{title}》已在库中，跳过")
-                latest_publish_time = self._get_feed_update_time(Mps_id)
-            else:
-                print_info(f"发现新文章: {title}")
-                item = {
-                    "aid": review_id,
-                    "id": review_id,
-                    "title": title,
-                    "link": build_mp_link_from_review_id(review_id, book_id),
-                    "cover": cover.get("pic") or "",
-                    "digest": cover.get("digest") or "",
-                    "content": "",
-                    "create_time": int(time.time()),
-                    "update_time": int(time.time()),
-                    "read_num": 0,
-                    "like_num": 0,
-                    "item_show_type": 0,
-                    "copyright_stat": 1,
-                    "mp_id": Mps_id,
-                }
-                if gather_content:
-                    if content_interval:
-                        time.sleep(content_interval)
-                    try:
-                        item["content"] = self._get_mp_content(review_id)
-                    except WereadMPAPIError as exc:
-                        logger.warning(f"微信读书正文获取失败 [{review_id}]: {exc}")
-                if CallBack is not None:
-                    super().FillBack(
-                        CallBack=CallBack,
-                        data=item,
-                        Ext_Data={"mp_title": Mps_title, "mp_id": Mps_id},
-                    )
-                if Item_Over_CallBack is not None:
-                    Item_Over_CallBack(item)
-                latest_publish_time = int(item["update_time"])
+            except WereadMPAPIError as exc:
+                if self.response_valid:
+                    # 列表接口本身可用（已成功翻页），属于正文缺失或补抓不完整
+                    # 等真实错误，直接上抛，下次任务重试。
+                    raise
+                print_warning(
+                    f"[{Mps_title}] 文章列表接口不可用({exc})，回退到仅取最新一篇"
+                )
+                latest_publish_time = self._collect_latest_via_cover(
+                    book_id,
+                    Mps_id,
+                    Mps_title,
+                    gather_content,
+                    CallBack=CallBack,
+                    Item_Over_CallBack=Item_Over_CallBack,
+                )
 
             self.update_mps(
                 Mps_id,
