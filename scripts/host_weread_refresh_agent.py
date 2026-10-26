@@ -50,6 +50,7 @@ from core.weread_cookie_refresh import (  # noqa: E402
     refresh_weread_cookie,
     _verify_cookie,
     _load_weread_data,
+    _primary_cookie,
 )
 
 HOST = os.environ.get("WEREAD_AGENT_HOST", "0.0.0.0")
@@ -66,7 +67,7 @@ def do_refresh() -> dict:
     """
     # 1) 当前 Cookie 仍有效 → 无需启动浏览器，直接返回
     _, data = _load_weread_data()
-    cookie = (data.get("cookie") or "").strip()
+    cookie = _primary_cookie(data)
     if cookie and _verify_cookie(cookie):
         return {
             "ok": True,

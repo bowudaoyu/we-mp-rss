@@ -239,8 +239,12 @@ def add_job(feeds:list[Feed]=None,task:MessageTask=None,isTest=False):
             from core.weread_session import renew_persisted_session
 
             renew = renew_persisted_session(user_agent=cfg.get("user_agent", ""))
-            if renew.get("renewed"):
-                print_info("[cookie] 微信读书会话已续期")
+            if renew.get("reason") == "ok":
+                print_info(f"[cookie] 微信读书会话已续期（{renew.get('renewed_count')} 个账号）")
+            elif renew.get("reason") == "partial":
+                print_warning(
+                    f"[cookie] 微信读书会话部分续期：{renew.get('renewed_count')}/{renew.get('total')} 个账号"
+                )
             elif renew.get("reason") != "cooldown":
                 print_warning(f"[cookie] 会话续期未生效: {renew.get('reason')}")
         except Exception as e:

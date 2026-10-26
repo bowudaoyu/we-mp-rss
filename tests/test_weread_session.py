@@ -170,6 +170,50 @@ class RenewPersistedSessionTest(unittest.TestCase):
         self.assertEqual(result["reason"], "renew_failed")
         self.assertEqual(self.read_lic()["cookie"], COOKIE)
 
+    def test_renews_each_account_in_multi_account_format(self):
+        # 扫码登录写入 accounts 数组并删掉顶层 cookie，续期必须认这个格式，且按 vid 写回各自账号
+        other = "wr_skey=OLD2; wr_vid=111; wr_rt=web%40RT2"
+        self.write_lic({
+            "accounts": [
+                {"cookie": COOKIE, "vid": "937607486", "name": "主号"},
+                {"cookie": other, "vid": "111", "name": "备用"},
+            ],
+            "cookie_refresh_last_ts": 0,
+        })
+        response = FakeResponse(payload={"succ": 1}, cookies={"wr_skey": "NEWSKEY"})
+        with patch("requests.post", return_value=response):
+            result = renew_persisted_session(lic_path=self.tmp.name)
+        self.assertEqual(result["reason"], "ok")
+        self.assertEqual(result["renewed_count"], 2)
+        saved = self.read_lic()
+        self.assertNotIn("cookie", saved)
+        self.assertEqual(len(saved["accounts"]), 2)
+        for acc, vid, name in zip(saved["accounts"], ("937607486", "111"), ("主号", "备用")):
+            self.assertEqual(parse_cookie(acc["cookie"])["wr_skey"], "NEWSKEY")
+            self.assertEqual(parse_cookie(acc["cookie"])["wr_vid"], vid)
+            self.assertEqual(acc["name"], name)
+
+    def test_partial_when_some_accounts_fail(self):
+        other = "wr_skey=OLD2; wr_vid=111; wr_rt=web%40RT2"
+        self.write_lic({
+            "accounts": [
+                {"cookie": COOKIE, "vid": "937607486"},
+                {"cookie": other, "vid": "111"},
+            ],
+            "cookie_refresh_last_ts": 0,
+        })
+        responses = [
+            FakeResponse(payload={"succ": 1}, cookies={"wr_skey": "NEWSKEY"}),
+            FakeResponse(payload={"succ": 0}, cookies={}),
+        ]
+        with patch("requests.post", side_effect=responses):
+            result = renew_persisted_session(lic_path=self.tmp.name)
+        self.assertTrue(result["renewed"])
+        self.assertEqual(result["reason"], "partial")
+        accounts = self.read_lic()["accounts"]
+        self.assertEqual(parse_cookie(accounts[0]["cookie"])["wr_skey"], "NEWSKEY")
+        self.assertEqual(accounts[1]["cookie"], other)
+
 
 if __name__ == "__main__":
     unittest.main()

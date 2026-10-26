@@ -122,39 +122,50 @@ def renew_persisted_session(
     min_interval: float = DEFAULT_MIN_INTERVAL,
     force: bool = False,
 ) -> dict:
-    """读取 wx.lic 里的 Cookie 做一次续期并写回。
+    """读取 wx.lic 里的 Cookie 做一次续期并写回；多账号时逐个续期。
 
-    返回 ``{"renewed": bool, "reason": str}``：
+    返回 ``{"renewed": bool, "reason": str, "renewed_count": int, "total": int}``：
 
-    - ``reason="ok"``：续期成功，新 Cookie 已落盘；
+    - ``reason="ok"``：所有带 wr_rt 的账号都续上了，新 Cookie 已落盘；
+    - ``reason="partial"``：部分账号续上了，其余多半整个会话已失效；
     - ``reason="cooldown"``：距上次刷新不足 ``min_interval`` 秒，本次跳过；
     - ``reason="no_cookie"`` / ``"no_refresh_token"``：还没扫过码，需要走扫码流程；
     - ``reason="renew_failed"``：续期被服务端拒绝，多半是整个会话已失效。
     """
     from core.weread_cookie_refresh import (
         DEFAULT_LIC_PATH,
+        _account_entries,
         _load_weread_data,
         _save_cookie,
     )
 
     path = lic_path or DEFAULT_LIC_PATH
     _, data = _load_weread_data(path)
-    cookie = (data.get("cookie") or "").strip()
-    if not cookie:
-        return {"renewed": False, "reason": "no_cookie"}
-    if not parse_cookie(cookie).get("wr_rt"):
-        return {"renewed": False, "reason": "no_refresh_token"}
+    cookies = [(a.get("cookie") or "").strip() for a in _account_entries(data)]
+    cookies = [c for c in cookies if c]
+    result = {"renewed": False, "reason": "", "renewed_count": 0, "total": len(cookies)}
+    if not cookies:
+        return {**result, "reason": "no_cookie"}
+    renewable = [c for c in cookies if parse_cookie(c).get("wr_rt")]
+    if not renewable:
+        return {**result, "reason": "no_refresh_token"}
 
     # 冷却复用 cookie_refresh_last_ts：无论上次是浏览器刷新还是 HTTP 续期写的，
     # 语义都是"Cookie 刚更新过"，此时再续一次没有意义。
     last_ts = float(data.get("cookie_refresh_last_ts") or 0)
     if not force and min_interval > 0 and time.time() - last_ts < min_interval:
-        return {"renewed": False, "reason": "cooldown"}
+        return {**result, "reason": "cooldown"}
 
-    new_cookie = renew_cookie(cookie, user_agent=user_agent)
-    if not new_cookie:
-        return {"renewed": False, "reason": "renew_failed"}
+    renewed_count = 0
+    for cookie in renewable:
+        new_cookie = renew_cookie(cookie, user_agent=user_agent)
+        if not new_cookie:
+            continue
+        # _save_cookie 按 vid 写回对应账号，并刷新 cookie_refresh_last_ts（即冷却起点）。
+        _save_cookie(new_cookie, lic_path=path)
+        renewed_count += 1
 
-    # _save_cookie 会顺带同步 vid 并刷新 cookie_refresh_last_ts（即冷却起点）。
-    _save_cookie(new_cookie, lic_path=path)
-    return {"renewed": True, "reason": "ok"}
+    if not renewed_count:
+        return {**result, "reason": "renew_failed"}
+    reason = "ok" if renewed_count == len(renewable) else "partial"
+    return {**result, "renewed": True, "reason": reason, "renewed_count": renewed_count}

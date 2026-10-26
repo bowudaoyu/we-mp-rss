@@ -61,19 +61,57 @@ def _load_weread_data(lic_path: str = DEFAULT_LIC_PATH):
     return doc, data
 
 
+def _account_entries(data: dict) -> list:
+    """返回 weread_data 里的账号列表：多账号格式取 accounts 数组，旧格式把 data 本身当唯一账号。
+
+    扫码登录（driver/weread_qr.py）写入 accounts 数组后会删掉顶层 cookie/vid/name，
+    只认顶层 cookie 会把已登录误判成"没有 Cookie"。
+    """
+    accounts = data.get("accounts")
+    if isinstance(accounts, list) and accounts:
+        return accounts
+    return [data] if (data.get("cookie") or "").strip() else []
+
+
+def _primary_cookie(data: dict) -> str:
+    """主账号（第一项）的 Cookie，与 core/wx/model/weread.py 选默认账号的口径一致。"""
+    entries = _account_entries(data)
+    return (entries[0].get("cookie") or "").strip() if entries else ""
+
+
 def _save_cookie(cookie: str, name: str = "", lic_path: str = DEFAULT_LIC_PATH):
     """把最新 cookie 写回 wx.lic 的 weread_data（保留文档其他部分）。
 
     同时同步 vid 字段：配置页与 /weread 状态接口用 weread_data.vid 判断是否已配置，
     若只更新 cookie 而不更新 vid，换账号扫码后会残留上一个账号的 vid。
+
+    多账号格式下按 vid 定位账号：同 vid 更新，新 vid 追加（与扫码登录同一口径）；
+    Cookie 里取不到 vid 时更新主账号。
     """
     doc, data = _load_weread_data(lic_path)
-    data["cookie"] = cookie
     vid = extract_vid(cookie)
-    if vid:
-        data["vid"] = vid
-    if name:
-        data["name"] = name
+    accounts = data.get("accounts")
+    if isinstance(accounts, list) and accounts:
+        idx = 0
+        if vid:
+            idx = next(
+                (i for i, a in enumerate(accounts) if str(a.get("vid", "")) == vid),
+                None,
+            )
+        if idx is None:
+            accounts.append({"cookie": cookie, "vid": vid, "name": name})
+        else:
+            accounts[idx]["cookie"] = cookie
+            if vid:
+                accounts[idx]["vid"] = vid
+            if name:
+                accounts[idx]["name"] = name
+    else:
+        data["cookie"] = cookie
+        if vid:
+            data["vid"] = vid
+        if name:
+            data["name"] = name
     data["cookie_refresh_last_ts"] = time.time()
     doc["weread_data"] = data
     _write_lic(lic_path, doc)
@@ -196,11 +234,11 @@ def refresh_weread_cookie(verbose: bool = True, headless_only: bool = False,
     # 冷却：上次刷新成功且在冷却期内，且已有 Cookie，则视为仍有效，跳过
     if cooldown_hours and cooldown_hours > 0:
         last_ts = data.get("cookie_refresh_last_ts") or 0
-        has_cookie = bool((data.get("cookie") or "").strip())
+        has_cookie = bool(_primary_cookie(data))
         if has_cookie and last_ts and (time.time() - float(last_ts)) < cooldown_hours * 3600:
             # 冷却期内：只有经真实接口验证 Cookie 仍有效才跳过刷新；
             # 否则（已过期 / 旧时间戳是假阳性）必须强制刷新，不能被旧时间戳卡住。
-            if _verify_cookie((data.get("cookie") or "").strip()):
+            if _verify_cookie(_primary_cookie(data)):
                 if verbose:
                     print(f"[refresh] Cookie 在冷却期内（{cooldown_hours:g}h）且仍有效，跳过刷新")
                 return True
@@ -305,7 +343,7 @@ def refresh_weread_cookie(verbose: bool = True, headless_only: bool = False,
 
     # 1) 常规无头刷新：登录态持久化，通常直接拿到有效 Cookie
     #    注入 wx.lic 已有 Cookie 作为种子（跨平台 profile 不互通时的可信回退）
-    seed_cookie = (data.get("cookie") or "").strip()
+    seed_cookie = _primary_cookie(data)
     cookie = _try(headless=True, force_bundled=force_bundled, seed_cookie=seed_cookie)
     # 必须实打实验证 Cookie 真能拉到数据，避免把过期 Cookie 误判为有效（假阳性）
     if cookie and "wr_vid=" in cookie and _verify_cookie(cookie):
