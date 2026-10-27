@@ -192,7 +192,8 @@ async def get_mp_articles_source(
     kw:str="",
     is_update:bool=True,
     content_type:str=Query(None,alias="ctype"),
-    template:str=None
+    # 不接受外部传入的 template：模板引擎会对表达式执行 eval，而本接口无需登录，
+    # 公开传入模板等于未授权远程代码执行（已有公网部署被植入挖矿程序）。
     # current_user: dict = Depends(get_current_user)
 ):
     limit = clamp_rss_limit(limit)
@@ -288,7 +289,7 @@ async def get_mp_articles_source(
             }
             rss.cache_content(article.id, content_data)
         # 生成RSS XML
-        rss_xml = rss.generate(rss_list,ext=ext, title=f"{feed.mp_name}",link=feed_link,description=feed.mp_intro,image_url=feed.mp_cover,template=template)
+        rss_xml = rss.generate(rss_list,ext=ext, title=f"{feed.mp_name}",link=feed_link,description=feed.mp_intro,image_url=feed.mp_cover)
         
         return Response(
             content=rss_xml,
