@@ -231,7 +231,9 @@ class MpsWereadMP(MpsWeread):
                 include_ticket=True,
             )
         except Exception as exc:
-            from core.wx.model.weread_mp import WereadMPAPIError
+            # 不要在本函数里再 import WereadMPAPIError（它就定义在本模块）：
+            # 函数体内的 import 会把它变成局部名，下面非 200 / 非 JSON 分支的 raise
+            # 就成了 UnboundLocalError，get_Articles 接不住、不回退 cover。
             if isinstance(exc, WereadMPAPIError):
                 raise
             raise WereadMPAPIError("network_error", str(exc)) from exc

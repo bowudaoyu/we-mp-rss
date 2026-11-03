@@ -194,6 +194,30 @@ class WereadMpRequestTest(unittest.TestCase):
         self.assertNotIn("x-wr-ticket", get.call_args.kwargs["headers"])
 
     @patch("requests.get")
+    def test_article_list_non_200_raises_api_error(self, get):
+        # 回归：函数体内曾有局部 import WereadMPAPIError，非 200 分支抛的是
+        # UnboundLocalError，get_Articles 接不住、不回退 cover，整个号采集失败。
+        get.return_value = Mock(status_code=502)
+        collector = self.make_collector()
+
+        with self.assertRaises(WereadMPAPIError) as caught:
+            collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+        self.assertEqual(caught.exception.code, 502)
+
+    @patch("requests.get")
+    def test_article_list_invalid_json_raises_api_error(self, get):
+        response = Mock(status_code=200)
+        response.json.side_effect = ValueError("not json")
+        get.return_value = response
+        collector = self.make_collector()
+
+        with self.assertRaises(WereadMPAPIError) as caught:
+            collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+        self.assertEqual(caught.exception.code, "invalid_json")
+
+    @patch("requests.get")
     def test_content_request_extracts_official_article_html(self, get):
         response = Mock(
             status_code=200,
@@ -325,6 +349,30 @@ class WereadMpCollectorTest(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["title"], "Latest")
         self.assertEqual(saved[0]["url"], "https://mp.weixin.qq.com/s/latest")
+        collector.update_mps.assert_called_once()
+
+    @patch("core.wx.base.RSS.clear_cache")
+    def test_list_non_200_falls_back_to_cover_latest_article(self, _clear_cache):
+        # 回归：列表接口非 200 曾抛 UnboundLocalError，get_Articles 不回退 cover，
+        # 线上一轮 114 个号里约 85 个直接失败、sync_time 停更。
+        collector = self.make_collector()
+        collector._weread_http_get = Mock(return_value=Mock(status_code=502))
+        collector._get_mp_cover = Mock(return_value={
+            "reviewId": "MP_WXS_1_latest",
+            "title": "Latest",
+            "pic": "https://example.test/pic.jpg",
+        })
+        saved = []
+
+        collector.get_Articles(
+            Mps_id="MP_WXS_1",
+            Mps_title="Feed title",
+            CallBack=lambda article: saved.append(article) or True,
+            MaxPage=1,
+            interval=0,
+        )
+
+        self.assertEqual([a["title"] for a in saved], ["Latest"])
         collector.update_mps.assert_called_once()
 
     @patch("core.wx.base.RSS.clear_cache")
